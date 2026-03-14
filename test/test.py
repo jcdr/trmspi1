@@ -5,7 +5,6 @@ import cocotb
 from cocotb.clock import Clock
 from cocotb.triggers import ClockCycles
 from cocotb.triggers import RisingEdge, FallingEdge, Timer
-from cocotb.binary import BinaryValue
 
 @cocotb.test()
 async def test_project(dut):
