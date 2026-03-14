@@ -20,7 +20,8 @@
 // Agreement bit: 1 if CPU output matches voted (part of majority), 0 otherwise
 // If seed_echo != seed, invalid frame
 // PRNG: 8-bit LFSR, polynomial x^8 + x^6 + x^5 + x^4 + 1, initial 8'h01 shared with CPUs
-// Cycle: 10Hz voting (timer 20-bit, ~100ms at 10MHz clk)
+// Cycle: 1kHz voting (timer 13-bit, ~1ms at 8.192MHz clk)
+// SCLK: 1.024MHz (main clk / 8)
 
 module tt_um_tmr_voter (
     input  wire [7:0] ui_in,    // Dedicated inputs (switches)
@@ -29,7 +30,7 @@ module tt_um_tmr_voter (
     output wire [7:0] uio_out,  // IOs: Output path
     output wire [7:0] uio_oe,   // IOs: Enable path (active high: 0=input, 1=output)
     input  wire ena,            // Always 1 when the design is powered, so you can ignore it
-    input  wire clk,            // System clock (assume ~10 MHz)
+    input  wire clk,            // System clock (assume ~8.192 MHz)
     input  wire rst_n           // Active low reset
 );
 
@@ -51,8 +52,8 @@ module tt_um_tmr_voter (
     wire miso1 = uio_in[4];
     wire miso2 = uio_in[6];
 
-    reg [7:0] sclk_div;           // For SCLK generation (~10MHz / 256 ~39kHz)
-    wire sclk_int = sclk_div[7];
+    reg [2:0] sclk_div;           // For SCLK generation (~8.192MHz / 8 = 1.024MHz)
+    wire sclk_int = sclk_div[2];  // Toggle every 4 clk (divide by 8 overall)
     always @(posedge clk or negedge rst_n) begin
         if (!rst_n) sclk_div <= 0;
         else sclk_div <= sclk_div + 1;
@@ -92,7 +93,7 @@ module tt_um_tmr_voter (
     wire p2_agree = (p2_out == voted);
 
     reg [7:0] prng_seed;  // Current seed
-    reg [19:0] timer;     // For 10Hz voting (~1M cycles at 10MHz)
+    reg [12:0] timer;     // For 1kHz voting (~8192 cycles at 8.192MHz)
 
     // PRNG: 8-bit LFSR, polynomial x^8 + x^6 + x^5 + x^4 + 1
     wire prng_fb = prng_seed[7] ^ prng_seed[5] ^ prng_seed[4] ^ prng_seed[3];
@@ -123,26 +124,28 @@ module tt_um_tmr_voter (
                 end
             end
             if (state == 1) begin  // TX_RX
-                sclk_out <= ~sclk_out;
-                if (sclk_out == 0) begin  // Shift on fall
-                    shift_out0 <= {shift_out0[22:0], 1'b0};
-                    shift_out1 <= {shift_out1[22:0], 1'b0};
-                    shift_out2 <= {shift_out2[22:0], 1'b0};
-                    bit_cnt <= bit_cnt + 1;
-                end else begin  // Sample on rise
-                    shift_in0 <= {shift_in0[22:0], miso0};
-                    shift_in1 <= {shift_in1[22:0], miso1};
-                    shift_in2 <= {shift_in2[22:0], miso2};
-                end
-                if (bit_cnt == 24) begin
-                    cs_n_out <= 1;
-                    state <= 0;
-                    // Process received
-                    if (seed_echo0 == prng_seed) p0_out <= desired0;
-                    if (seed_echo1 == prng_seed) p1_out <= desired1;
-                    if (seed_echo2 == prng_seed) p2_out <= desired2;
-                    if (all_valid) voted <= voted_temp;
-                    else voted <= 0;
+                if (sclk_div == 3'b111) begin  // Toggle SCLK every 8 main clk cycles
+                    sclk_out <= ~sclk_out;
+                    if (sclk_out == 0) begin  // Shift on fall
+                        shift_out0 <= {shift_out0[22:0], 1'b0};
+                        shift_out1 <= {shift_out1[22:0], 1'b0};
+                        shift_out2 <= {shift_out2[22:0], 1'b0};
+                        bit_cnt <= bit_cnt + 1;
+                    end else begin  // Sample on rise
+                        shift_in0 <= {shift_in0[22:0], miso0};
+                        shift_in1 <= {shift_in1[22:0], miso1};
+                        shift_in2 <= {shift_in2[22:0], miso2};
+                    end
+                    if (bit_cnt == 24) begin
+                        cs_n_out <= 1;
+                        state <= 0;
+                        // Process received
+                        if (seed_echo0 == prng_seed) p0_out <= desired0;
+                        if (seed_echo1 == prng_seed) p1_out <= desired1;
+                        if (seed_echo2 == prng_seed) p2_out <= desired2;
+                        if (all_valid) voted <= voted_temp;
+                        else voted <= 0;
+                    end
                 end
             end
         end

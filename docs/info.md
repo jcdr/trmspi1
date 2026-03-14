@@ -28,13 +28,13 @@ ensuring fault tolerance against processor or software malfunctions.
 
 The chip acts as SPI master:
 - Generates a pseudo-random seed (shared LFSR PRNG, initial 0x01).
-- Sends frame to each processor: seed + agreement_byte + switches + ECC (Hamming code).
-- Receives: seed_echo + desired_outputs + unused + ECC.
-- Validates/corrects with ECC and seed match.
+- Sends frame to each processor: seed + agreement_byte + switches.
+- Receives: seed_echo + desired_outputs + unused.
+- Validates with seed match.
 - Majority votes the 3 desired_outputs.
 - Outputs voted bits to display.
 - Feedback: Per-processor agreement bit (1 if matches majority/voted).
-- Voting cycle: ~10Hz (timed internally assuming ~10MHz clk).
+- Voting cycle: 1kHz (timed internally assuming 8.192MHz clk).
 - Safe state: Outputs 0 if no valid majority.
 
 Processors must echo seed, compute outputs, and check PRNG sequence for coherency.
@@ -56,7 +56,7 @@ Connect the demo board:
 ## External hardware
 
 - 3x Ambiq Apollo MCUs (or similar) connected via SPI.
-- Demo board for testing (clock ~10MHz, switches, display). On the
+- Demo board for testing (clock 8.192MHz, switches, display). On the
 demo board the RP2350 SPI1 in slave mode is connected to cs_n, sclk,
 miso0, mosi0. For basic majority simulation miso0 and miso2 receive
 the same signal from RP2350 SPI1.tx, simulating two agreeing processors.
