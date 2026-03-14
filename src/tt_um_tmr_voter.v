@@ -261,11 +261,11 @@ module hamming_encode24 (
     assign pos[30] = 0;
     assign pos[31] = 0;
 
-    assign pos[1] = ^{pos[3],pos[5],pos[7],pos[9],pos[11],pos[13],pos[15],pos[17],pos[19],pos[21],pos[23],pos[25],pos[27],pos[29],pos[31]};
-    assign pos[2] = ^{pos[3],pos[6],pos[7],pos[10],pos[11],pos[14],pos[15],pos[18],pos[19],pos[22],pos[23],pos[26],pos[27],pos[30],pos[31]};
-    assign pos[4] = ^{pos[5],pos[6],pos[7],pos[12],pos[13],pos[14],pos[15],pos[20],pos[21],pos[22],pos[23],pos[28],pos[29],pos[30],pos[31]};
-    assign pos[8] = ^{pos[9],pos[10],pos[11],pos[12],pos[13],pos[14],pos[15],pos[24],pos[25],pos[26],pos[27],pos[28],pos[29],pos[30],pos[31]};
-    assign pos[16] = ^{pos[17],pos[18],pos[19],pos[20],pos[21],pos[22],pos[23],pos[24],pos[25],pos[26],pos[27],pos[28],pos[29],pos[30],pos[31]};
+    assign pos[1] = ^({pos[3],pos[5],pos[7],pos[9],pos[11],pos[13],pos[15],pos[17],pos[19],pos[21],pos[23],pos[25],pos[27],pos[29],pos[31]});
+    assign pos[2] = ^({pos[3],pos[6],pos[7],pos[10],pos[11],pos[14],pos[15],pos[18],pos[19],pos[22],pos[23],pos[26],pos[27],pos[30],pos[31]});
+    assign pos[4] = ^({pos[5],pos[6],pos[7],pos[12],pos[13],pos[14],pos[15],pos[20],pos[21],pos[22],pos[23],pos[28],pos[29],pos[30],pos[31]});
+    assign pos[8] = ^({pos[9],pos[10],pos[11],pos[12],pos[13],pos[14],pos[15],pos[24],pos[25],pos[26],pos[27],pos[28],pos[29],pos[30],pos[31]});
+    assign pos[16] = ^({pos[17],pos[18],pos[19],pos[20],pos[21],pos[22],pos[23],pos[24],pos[25],pos[26],pos[27],pos[28],pos[29],pos[30],pos[31]});
 
     assign code = pos[31:1];
 endmodule
@@ -282,11 +282,11 @@ module hamming_decode24 (
 
     always @(*) begin
         r[31:1] = code[30:0];
-        s1 = ^{r[1],r[3],r[5],r[7],r[9],r[11],r[13],r[15],r[17],r[19],r[21],r[23],r[25],r[27],r[29],r[31]};
-        s2 = ^{r[2],r[3],r[6],r[7],r[10],r[11],r[14],r[15],r[18],r[19],r[22],r[23],r[26],r[27],r[30],r[31]};
-        s4 = ^{r[4],r[5],r[6],r[7],r[12],r[13],r[14],r[15],r[20],r[21],r[22],r[23],r[28],r[29],r[30],r[31]};
-        s8 = ^{r[8],r[9],r[10],r[11],r[12],r[13],r[14],r[15],r[24],r[25],r[26],r[27],r[28],r[29],r[30],r[31]};
-        s16 = ^{r[16],r[17],r[18],r[19],r[20],r[21],r[22],r[23],r[24],r[25],r[26],r[27],r[28],r[29],r[30],r[31]};
+        s1 = ^({r[1],r[3],r[5],r[7],r[9],r[11],r[13],r[15],r[17],r[19],r[21],r[23],r[25],r[27],r[29],r[31]});
+        s2 = ^({r[2],r[3],r[6],r[7],r[10],r[11],r[14],r[15],r[18],r[19],r[22],r[23],r[26],r[27],r[30],r[31]});
+        s4 = ^({r[4],r[5],r[6],r[7],r[12],r[13],r[14],r[15],r[20],r[21],r[22],r[23],r[28],r[29],r[30],r[31]});
+        s8 = ^({r[8],r[9],r[10],r[11],r[12],r[13],r[14],r[15],r[24],r[25],r[26],r[27],r[28],r[29],r[30],r[31]});
+        s16 = ^({r[16],r[17],r[18],r[19],r[20],r[21],r[22],r[23],r[24],r[25],r[26],r[27],r[28],r[29],r[30],r[31]});
         syndrome = {s16, s8, s4, s2, s1};
         corrected_r = r;
         if (syndrome != 0) begin
