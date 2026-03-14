@@ -13,7 +13,10 @@
 // uio_oe = 8'b10101011 (outputs for 0,1,3,5,7; inputs for 2,4,6)
 // uo_out = voted[7:0] (to 7-segment display)
 // ui_in[7:0] = switches (inputs to send to CPUs)
-// Assumes SPI mode 0: SCLK low idle, sample on rise, shift on fall
+// Assumes SPI mode 0 (CPOL=0, CPHA=0): SCLK idles low (clock polarity 0),
+// data sampled on rising clock edge (first edge), shifted on falling clock edge (second edge).
+// In other words: Data is clocked out on the falling edge and clocked in on the rising edge, with SCLK starting low.
+// This matches the default SPI mode on the RP2350 microcontroller (e.g., in the Raspberry Pi Pico 2 SDK and hardware).
 // Frame size: 24 bits
 // Master to Slave: seed[7:0], agreement_byte[7:0] ({7'b0, agreement_bit}), switches[7:0]
 // Slave to Master: seed_echo[7:0], desired_out[7:0], unused[7:0]

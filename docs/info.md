@@ -26,7 +26,15 @@ ensuring fault tolerance against processor or software malfunctions.
 
 ## How does it work?
 
-The chip acts as SPI master:
+The chip acts as SPI master using SPI Mode 0 (CPOL=0, CPHA=0). This
+means: Clock polarity (CPOL) is 0 (SCLK idles low), clock phase (CPHA)
+is 0 (data sampled on the first/rising clock edge, shifted on the
+second/falling clock edge). In other words: Data is clocked out on the
+falling edge and clocked in on the rising edge, with SCLK starting
+low. This matches the default SPI mode on the RP2350 microcontroller
+(e.g., in the Raspberry Pi Pico 2 SDK and hardware, unless
+reconfigured).
+
 - Generates a pseudo-random seed (shared LFSR PRNG, initial 0x01).
 - Sends frame to each processor: seed + agreement_byte + switches.
 - Receives: seed_echo + desired_outputs + unused.
