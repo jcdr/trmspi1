@@ -10,7 +10,7 @@ from cocotb.triggers import RisingEdge, FallingEdge, Timer
 async def test_project(dut):
     dut._log.info("Start")
 
-    # Set the clock period to 10 us (10 MHz)
+    # Set the clock period to 100 ns (10 MHz)
     clock = Clock(dut.clk, 100, unit="ns")
     cocotb.start_soon(clock.start())
 

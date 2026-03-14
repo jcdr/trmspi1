@@ -2,15 +2,15 @@
 // Top module for Tiny Tapeout user project
 // Implements SPI master majority voter for 3 redundant processors
 // Pin assignment:
-// uio_out[0] = sclk (shared, out)
-// uio_out[1] = cs_n (shared, out)
-// uio_out[2] = mosi1 (out)
-// uio_out[3] = unused (MISO1 in)
-// uio_out[4] = mosi2 (out)
-// uio_out[5] = unused (MISO2 in)
-// uio_out[6] = mosi3 (out)
-// uio_out[7] = unused (MISO3 in)
-// uio_oe = 8'b01010111 (outputs for 0,1,2,4,6; inputs for 3,5,7)
+// uio_out[0] = cs_n (shared, out)
+// uio_out[1] = sclk (shared, out)
+// uio_out[2] = miso0 (in)
+// uio_out[3] = mosi0 (out)
+// uio_out[4] = miso1 (in)
+// uio_out[5] = mosi1 (out)
+// uio_out[6] = miso2 (in)
+// uio_out[7] = mosi2 (out)
+// uio_oe = 8'b10101011 (outputs for 0,1,3,5,7; inputs for 2,4,6)
 // uo_out = voted[7:0] (to 7-segment display)
 // ui_in[7:0] = switches (inputs to send to CPUs)
 // Assumes SPI mode 0: SCLK low idle, sample on rise, shift on fall
@@ -33,23 +33,23 @@ module tt_um_tmr_voter (
     input  wire rst_n           // Active low reset
 );
 
-    assign uio_oe = 8'b01010111;  // Outputs: 0,1,2,4,6; Inputs: 3,5,7
+    assign uio_oe = 8'b10101011;  // Outputs: 0,1,3,5,7; Inputs: 2,4,6
     assign uo_out = voted;        // Voted outputs to 7-segment display
 
     wire [7:0] switches = ui_in;
 
-    assign uio_out[0] = sclk_out;
-    assign uio_out[1] = cs_n_out;
-    assign uio_out[2] = mosi1;
-    assign uio_out[3] = 1'b0;     // Unused for input
-    assign uio_out[4] = mosi2;
-    assign uio_out[5] = 1'b0;     // Unused for input
-    assign uio_out[6] = mosi3;
-    assign uio_out[7] = 1'b0;     // Unused for input
+    assign uio_out[0] = cs_n_out;
+    assign uio_out[1] = sclk_out;
+    assign uio_out[2] = 1'b0;     // Unused for input
+    assign uio_out[3] = mosi0;
+    assign uio_out[4] = 1'b0;     // Unused for input
+    assign uio_out[5] = mosi1;
+    assign uio_out[6] = 1'b0;     // Unused for input
+    assign uio_out[7] = mosi2;
 
-    wire miso1 = uio_in[3];
-    wire miso2 = uio_in[5];
-    wire miso3 = uio_in[7];
+    wire miso0 = uio_in[2];
+    wire miso1 = uio_in[4];
+    wire miso2 = uio_in[6];
 
     reg [7:0] sclk_div;           // For SCLK generation (~10MHz / 256 ~39kHz)
     wire sclk_int = sclk_div[7];
@@ -61,35 +61,35 @@ module tt_um_tmr_voter (
     reg sclk_out, cs_n_out;
     reg [4:0] bit_cnt;
     reg state;  // 0=IDLE, 1=TX_RX
-    reg [23:0] shift_out1, shift_out2, shift_out3;
-    reg [23:0] shift_in1, shift_in2, shift_in3;
+    reg [23:0] shift_out0, shift_out1, shift_out2;
+    reg [23:0] shift_in0, shift_in1, shift_in2;
+    wire mosi0 = shift_out0[23];
     wire mosi1 = shift_out1[23];
     wire mosi2 = shift_out2[23];
-    wire mosi3 = shift_out3[23];
 
+    wire [7:0] seed_echo0 = shift_in0[23:16];
     wire [7:0] seed_echo1 = shift_in1[23:16];
     wire [7:0] seed_echo2 = shift_in2[23:16];
-    wire [7:0] seed_echo3 = shift_in3[23:16];
+    wire [7:0] desired0 = shift_in0[15:8];
     wire [7:0] desired1 = shift_in1[15:8];
     wire [7:0] desired2 = shift_in2[15:8];
-    wire [7:0] desired3 = shift_in3[15:8];
 
-    wire all_valid = (seed_echo1 == prng_seed) & (seed_echo2 == prng_seed) & (seed_echo3 == prng_seed);
+    wire all_valid = (seed_echo0 == prng_seed) & (seed_echo1 == prng_seed) & (seed_echo2 == prng_seed);
 
     wire [7:0] voted_temp;
     majority_voter3 temp_voter (
+        .in0(desired0),
         .in1(desired1),
         .in2(desired2),
-        .in3(desired3),
         .out(voted_temp)
     );
 
-    reg [7:0] p1_out, p2_out, p3_out;
+    reg [7:0] p0_out, p1_out, p2_out;
     reg [7:0] voted;
 
+    wire p0_agree = (p0_out == voted);
     wire p1_agree = (p1_out == voted);
     wire p2_agree = (p2_out == voted);
-    wire p3_agree = (p3_out == voted);
 
     reg [7:0] prng_seed;  // Current seed
     reg [19:0] timer;     // For 10Hz voting (~1M cycles at 10MHz)
@@ -102,11 +102,11 @@ module tt_um_tmr_voter (
             prng_seed <= 8'h01;  // Initial seed, shared with CPUs
             timer <= 0;
             voted <= 0;
-            p1_out <= 0; p2_out <= 0; p3_out <= 0;
+            p0_out <= 0; p1_out <= 0; p2_out <= 0;
             state <= 0;
             bit_cnt <= 0;
-            shift_out1 <= 0; shift_out2 <= 0; shift_out3 <= 0;
-            shift_in1 <= 0; shift_in2 <= 0; shift_in3 <= 0;
+            shift_out0 <= 0; shift_out1 <= 0; shift_out2 <= 0;
+            shift_in0 <= 0; shift_in1 <= 0; shift_in2 <= 0;
             sclk_out <= 0;
             cs_n_out <= 1;
         end else begin
@@ -114,9 +114,9 @@ module tt_um_tmr_voter (
             if (timer == 0) begin  // timer_done
                 prng_seed <= {prng_seed[6:0], prng_fb};
                 if (state == 0) begin  // IDLE
+                    shift_out0 <= {prng_seed, {7'b0000000, p0_agree}, switches};
                     shift_out1 <= {prng_seed, {7'b0000000, p1_agree}, switches};
                     shift_out2 <= {prng_seed, {7'b0000000, p2_agree}, switches};
-                    shift_out3 <= {prng_seed, {7'b0000000, p3_agree}, switches};
                     cs_n_out <= 0;
                     state <= 1;  // TX_RX
                     bit_cnt <= 0;
@@ -125,22 +125,22 @@ module tt_um_tmr_voter (
             if (state == 1) begin  // TX_RX
                 sclk_out <= ~sclk_out;
                 if (sclk_out == 0) begin  // Shift on fall
+                    shift_out0 <= {shift_out0[22:0], 1'b0};
                     shift_out1 <= {shift_out1[22:0], 1'b0};
                     shift_out2 <= {shift_out2[22:0], 1'b0};
-                    shift_out3 <= {shift_out3[22:0], 1'b0};
                     bit_cnt <= bit_cnt + 1;
                 end else begin  // Sample on rise
+                    shift_in0 <= {shift_in0[22:0], miso0};
                     shift_in1 <= {shift_in1[22:0], miso1};
                     shift_in2 <= {shift_in2[22:0], miso2};
-                    shift_in3 <= {shift_in3[22:0], miso3};
                 end
                 if (bit_cnt == 24) begin
                     cs_n_out <= 1;
                     state <= 0;
                     // Process received
+                    if (seed_echo0 == prng_seed) p0_out <= desired0;
                     if (seed_echo1 == prng_seed) p1_out <= desired1;
                     if (seed_echo2 == prng_seed) p2_out <= desired2;
-                    if (seed_echo3 == prng_seed) p3_out <= desired3;
                     if (all_valid) voted <= voted_temp;
                     else voted <= 0;
                 end
@@ -151,13 +151,13 @@ module tt_um_tmr_voter (
 endmodule
 
 module majority_voter3 #(parameter WIDTH = 8) (
-    input [WIDTH-1:0] in1, in2, in3,
+    input [WIDTH-1:0] in0, in1, in2,
     output [WIDTH-1:0] out
 );
     genvar i;
     generate
         for (i = 0; i < WIDTH; i = i + 1) begin : vote_gen
-            assign out[i] = (in1[i] & in2[i]) | (in1[i] & in3[i]) | (in2[i] & in3[i]);
+            assign out[i] = (in0[i] & in1[i]) | (in0[i] & in2[i]) | (in1[i] & in2[i]);
         end
     endgenerate
 endmodule

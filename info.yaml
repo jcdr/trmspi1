@@ -5,7 +5,7 @@ project:
   discord:      "jcamdr" # Your discord username, for communication and automatically assigning you a Tapeout role (optional)
   description:  "Triple Modular Redundancy 8 I/O with SPI master for each processor"
   language:     "Verilog"
-  clock_hz:     1000000  # Clock frequency in Hz (or 0 if not applicable)
+  clock_hz:     10000000  # Clock frequency in Hz (or 0 if not applicable)
 
   # How many tiles your design occupies? A single tile is about 167x108 uM.
   tiles: "1x1"          # Valid values: 1x1, 1x2, 2x2, 3x2, 4x2, 6x2 or 8x2
@@ -43,14 +43,14 @@ pinout:
   uo[7]: "out7"
 
   # Bidirectional pins
-  uio[0]: "sclk"
-  uio[1]: "cs_n"
-  uio[2]: "mosi1"
-  uio[3]: "miso1"
-  uio[4]: "mosi2"
-  uio[5]: "miso2"
-  uio[6]: "mosi3"
-  uio[7]: "miso3"
+  uio[0]: "cs_n"
+  uio[1]: "sclk"
+  uio[2]: "miso0"
+  uio[3]: "mosi0"
+  uio[4]: "miso1"
+  uio[5]: "mosi1"
+  uio[6]: "miso2"
+  uio[7]: "mosi2"
 
 # Do not change!
 yaml_version: 6

@@ -11,16 +11,18 @@ You can also include images in this folder and reference them in the markdown. E
 
 ## What is this?
 
-This is a Triple Modular Redundancy (TMR) voter chip for safety-critical embedded systems (e.g., medical devices). It interfaces with 3 redundant low-power processors (like Ambiq Apollo) via SPI to vote on their outputs, ensuring fault tolerance against processor or software malfunctions.
+This is a Triple Modular Redundancy (TMR) voter chip for safety-critical embedded systems (e.g., medical devices).
+It interfaces with 3 redundant low-power processors (like Ambiq Apollo) via SPI to vote on their outputs,
+ensuring fault tolerance against processor or software malfunctions.
 
 - **Inputs**: 8 switch inputs from the demo board (ui_in), sent to processors.
 - **Outputs**: 8 voted discrete signals (uo_out, connected to 7-segment + dot display on demo board).
 - **SPI Interface** (on bidirectional pins uio):
-  - Shared SCLK (uio[0], out)
-  - Shared nCS (uio[1], out)
-  - MOSI1 (uio[2], out), MISO1 (uio[3], in)
-  - MOSI2 (uio[4], out), MISO2 (uio[5], in)
-  - MOSI3 (uio[6], out), MISO3 (uio[7], in)
+  - Shared cs_n (uio[0], out)
+  - Shared sclk (uio[1], out)
+  - miso0 (uio[2], in), mosi0 (uio[3], out)
+  - miso1 (uio[4], in), mosi1 (uio[5], out)
+  - miso2 (uio[6], in), mosi2 (uio[7], out)
 
 ## How does it work?
 
@@ -54,4 +56,7 @@ Connect the demo board:
 ## External hardware
 
 - 3x Ambiq Apollo MCUs (or similar) connected via SPI.
-- Demo board for testing (clock ~10MHz, switches, display).
+- Demo board for testing (clock ~10MHz, switches, display). On the
+demo board the RP2350 SPI1 in slave mode is connected to cs_n, sclk,
+miso0, mosi0. For basic majority simulation miso0 and miso2 receive
+the same signal from RP2350 SPI1.tx, simulating two agreeing processors.
