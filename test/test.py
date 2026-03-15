@@ -3,7 +3,7 @@
 
 import cocotb
 from cocotb.clock import Clock
-from cocotb.triggers import ClockCycles, Edge, Timer
+from cocotb.triggers import ClockCycles, Timer
 
 def compute_next(prn):
     fb = ((prn >> 7) & 1) ^ ((prn >> 5) & 1) ^ ((prn >> 4) & 1) ^ ((prn >> 3) & 1)
@@ -12,7 +12,7 @@ def compute_next(prn):
 async def wait_rising(dut, signal, bit):
     prev = signal.value[bit]
     while True:
-        await Edge(signal)
+        await signal.value_change
         curr = signal.value[bit]
         if curr == 1 and prev == 0:
             break
@@ -21,7 +21,7 @@ async def wait_rising(dut, signal, bit):
 async def wait_falling(dut, signal, bit):
     prev = signal.value[bit]
     while True:
-        await Edge(signal)
+        await signal.value_change
         curr = signal.value[bit]
         if curr == 0 and prev == 1:
             break
@@ -66,7 +66,7 @@ async def test_project(dut):
     cocotb.start_soon(drive_slave(dut, 4, bits))
     cocotb.start_soon(drive_slave(dut, 6, bits))
     await wait_rising(dut, dut.uio_out, 0)  # Wait for transaction end
-    await Timer(1, units="ns")
+    await Timer(1, unit="ns")
     assert dut.uo_out.value == 0xA5
 
     # Second cycle: All valid, desired=0x5A
@@ -80,7 +80,7 @@ async def test_project(dut):
     cocotb.start_soon(drive_slave(dut, 6, bits))
     await wait_falling(dut, dut.uio_out, 0)  # Wait for next start
     await wait_rising(dut, dut.uio_out, 0)  # Wait for end
-    await Timer(1, units="ns")
+    await Timer(1, unit="ns")
     assert dut.uo_out.value == 0x5A
 
     # Third cycle: One valid with desired=0x3C, two invalid -> no update, stays 0x5A
@@ -94,7 +94,7 @@ async def test_project(dut):
     cocotb.start_soon(drive_slave(dut, 6, bits_bad))
     await wait_falling(dut, dut.uio_out, 0)
     await wait_rising(dut, dut.uio_out, 0)
-    await Timer(1, units="ns")
+    await Timer(1, unit="ns")
     assert dut.uo_out.value == 0x5A
 
     dut._log.info("Test complete")
