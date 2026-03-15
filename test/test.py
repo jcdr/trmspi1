@@ -9,21 +9,6 @@ def compute_next(prn):
     fb = ((prn >> 7) & 1) ^ ((prn >> 5) & 1) ^ ((prn >> 4) & 1) ^ ((prn >> 3) & 1)
     return ((prn & 0x7F) << 1) | fb
 
-async def drive_all_slaves(dut, bits):
-    """ONE single task drives ALL three MISO lines at the same time"""
-    await wait_falling(dut, dut.uio_out, 0)          # wait for CS low
-
-    for i in range(24):
-        await wait_falling(dut, dut.uio_out, 1)      # drive on falling SCLK
-
-        # Read current uio_in, set all three bits, write back once
-        current = int(dut.uio_in.value)
-        new_val = current
-        new_val |= (bits[i] << 2)   # miso0 = uio_in[2]
-        new_val |= (bits[i] << 4)   # miso1 = uio_in[4]
-        new_val |= (bits[i] << 6)   # miso2 = uio_in[6]
-        dut.uio_in.value = new_val
-
 async def wait_falling(dut, signal, bit):
     prev = signal.value[bit]
     while True:
@@ -32,6 +17,16 @@ async def wait_falling(dut, signal, bit):
         if curr == 0 and prev == 1:
             break
         prev = curr
+
+async def drive_all_slaves(dut, bits):
+    await wait_falling(dut, dut.uio_out, 0)          # CS low
+    for i in range(24):
+        await wait_falling(dut, dut.uio_out, 1)      # drive on falling SCLK
+        current = int(dut.uio_in.value)
+        # Clear the three MISO bits first, then set the new value (this fixes 0xFF)
+        mask = ~((1<<2) | (1<<4) | (1<<6)) & 0xFF
+        new_val = (current & mask) | (bits[i] << 2) | (bits[i] << 4) | (bits[i] << 6)
+        dut.uio_in.value = new_val
 
 @cocotb.test()
 async def test_project(dut):
@@ -52,11 +47,17 @@ async def test_project(dut):
     dut._log.info("=== First transaction: All valid, should set voted = 0xA5 ===")
     dut.ui_in.value = 0xA5
     current_prn = 0x01
-    next_prn = compute_next(current_prn)
-    frame = (next_prn << 16) | (0xA5 << 8)
-    bits = [(frame >> (23 - i)) & 1 for i in range(24)]
+    next_prn = compute_next(current_prn)          # will be 0x02
 
-    # ONLY ONE task now (no more race!)
+    # Full 24-bit Slave→Master frame: next_prn + desired (0xA5) + unused (0x00)
+    bytes_to_send = [next_prn, 0xA5, 0x00]
+    bits = []
+    for b in bytes_to_send:
+        for j in range(8):
+            bits.append((b >> (7 - j)) & 1)
+
+    dut._log.info(f"Sending on all MISO lines: next_prn=0x{next_prn:02X}, desired=0xA5, unused=0x00")
+
     cocotb.start_soon(drive_all_slaves(dut, bits))
 
     await Timer(1, unit="ms")
