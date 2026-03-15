@@ -9,6 +9,21 @@ def compute_next(prn):
     fb = ((prn >> 7) & 1) ^ ((prn >> 5) & 1) ^ ((prn >> 4) & 1) ^ ((prn >> 3) & 1)
     return ((prn & 0x7F) << 1) | fb
 
+async def drive_all_slaves(dut, bits):
+    """ONE single task drives ALL three MISO lines at the same time"""
+    await wait_falling(dut, dut.uio_out, 0)          # wait for CS low
+
+    for i in range(24):
+        await wait_falling(dut, dut.uio_out, 1)      # drive on falling SCLK
+
+        # Read current uio_in, set all three bits, write back once
+        current = int(dut.uio_in.value)
+        new_val = current
+        new_val |= (bits[i] << 2)   # miso0 = uio_in[2]
+        new_val |= (bits[i] << 4)   # miso1 = uio_in[4]
+        new_val |= (bits[i] << 6)   # miso2 = uio_in[6]
+        dut.uio_in.value = new_val
+
 async def wait_falling(dut, signal, bit):
     prev = signal.value[bit]
     while True:
@@ -17,15 +32,6 @@ async def wait_falling(dut, signal, bit):
         if curr == 0 and prev == 1:
             break
         prev = curr
-
-async def drive_slave(dut, miso_idx, bits):
-    await wait_falling(dut, dut.uio_out, 0)          # CS low
-    for i in range(24):
-        await wait_falling(dut, dut.uio_out, 1)      # drive MISO on falling SCLK
-        # SAFE bit drive (uio_in is packed — cocotb forbids direct indexing)
-        current = int(dut.uio_in.value)
-        new_val = (current & ~(1 << miso_idx)) | (bits[i] << miso_idx)
-        dut.uio_in.value = new_val
 
 @cocotb.test()
 async def test_project(dut):
@@ -50,11 +56,10 @@ async def test_project(dut):
     frame = (next_prn << 16) | (0xA5 << 8)
     bits = [(frame >> (23 - i)) & 1 for i in range(24)]
 
-    cocotb.start_soon(drive_slave(dut, 2, bits))
-    cocotb.start_soon(drive_slave(dut, 4, bits))
-    cocotb.start_soon(drive_slave(dut, 6, bits))
+    # ONLY ONE task now (no more race!)
+    cocotb.start_soon(drive_all_slaves(dut, bits))
 
-    await Timer(1, unit="ms")   # one full transaction (matches your change)
+    await Timer(1, unit="ms")
     voted = int(dut.uo_out.value)
     dut._log.info(f"voted after transaction = 0x{voted:02X}")
     assert voted == 0xA5, f"Expected 0xA5, got 0x{voted:02X}"
