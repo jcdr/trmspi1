@@ -79,13 +79,15 @@ module tt_um_tmr_voter (
     wire [7:0] desired1 = shift_in1[15:8];
     wire [7:0] desired2 = shift_in2[15:8];
 
-    wire [7:0] voted_temp;
-    majority_voter3 temp_voter (
-        .in0(desired0),
-        .in1(desired1),
-        .in2(desired2),
-        .out(voted_temp)
-    );
+    // NEW: Combinational wires for updates (fixes accumulation and update timing)
+    wire valid0 = (received_next0 == next_prn);
+    wire valid1 = (received_next1 == next_prn);
+    wire valid2 = (received_next2 == next_prn);
+    wire [7:0] new_p0_out = valid0 ? desired0 : p0_out;
+    wire [7:0] new_p1_out = valid1 ? desired1 : p1_out;
+    wire [7:0] new_p2_out = valid2 ? desired2 : p2_out;
+    wire [2:0] new_valid_count = valid0 + valid1 + valid2;
+    wire [7:0] new_voted = (new_p0_out & new_p1_out) | (new_p0_out & new_p2_out) | (new_p1_out & new_p2_out);
 
     reg [7:0] p0_out, p1_out, p2_out;
     reg [7:0] voted;
@@ -150,27 +152,13 @@ module tt_um_tmr_voter (
                     if (bit_cnt == 24) begin
                         cs_n_out <= 1;
                         state <= 0;
-                        // Process received: Validate each CPU's next_prn
-                        if (received_next0 == next_prn) begin
-                            p0_out <= desired0;
-                            valid_count <= valid_count + 1;
-                        end  // else keep p0_out untouched
-                        if (received_next1 == next_prn) begin
-                            p1_out <= desired1;
-                            valid_count <= valid_count + 1;
-                        end  // else keep p1_out untouched
-                        if (received_next2 == next_prn) begin
-                            p2_out <= desired2;
-                            valid_count <= valid_count + 1;
-                        end  // else keep p2_out untouched
-                        // Update voted only if at least 2 valid (majority possible); else keep previous voted
-                        if (valid_count >= 2) begin
-                            majority_voter3 voter (
-                                .in0(p0_out),
-                                .in1(p1_out),
-                                .in2(p2_out),
-                                .out(voted)
-                            );
+                        // CHANGED: Use combinational wires for validation/accumulation/updates
+                        p0_out <= new_p0_out;
+                        p1_out <= new_p1_out;
+                        p2_out <= new_p2_out;
+                        valid_count <= new_valid_count;
+                        if (new_valid_count >= 2) begin
+                            voted <= new_voted;
                         end  // else voted remains untouched (safe, as per previous state)
                         // Advance PRNG for next cycle
                         current_prn <= next_prn;
@@ -180,16 +168,4 @@ module tt_um_tmr_voter (
         end
     end
 
-endmodule
-
-module majority_voter3 #(parameter WIDTH = 8) (
-    input [WIDTH-1:0] in0, in1, in2,
-    output [WIDTH-1:0] out
-);
-    genvar i;
-    generate
-        for (i = 0; i < WIDTH; i = i + 1) begin : vote_gen
-            assign out[i] = (in0[i] & in1[i]) | (in0[i] & in2[i]) | (in1[i] & in2[i]);
-        end
-    endgenerate
 endmodule
