@@ -65,8 +65,10 @@ module tt_um_tmr_voter (
     reg sclk_out, cs_n_out;
     reg [4:0] bit_cnt;
     reg state;  // 0=IDLE, 1=TX_RX
-    reg [1:0] phase;
-    reg [2:0] bit_pos;
+
+    // MINIMAL FIX: removed unused phase/bit_pos (was causing off-by-one race)
+    // bit_cnt[4:3] = current byte (0=next_prn, 1=agreement, 2=switches)
+    // bit_cnt[2:0] = bit inside byte
 
     reg [7:0] tx_shift0, tx_shift1, tx_shift2;
     reg [7:0] rx_shift0, rx_shift1, rx_shift2;
@@ -114,8 +116,7 @@ module tt_um_tmr_voter (
             p0_out <= 0; p1_out <= 0; p2_out <= 0;
             state <= 0;
             bit_cnt <= 0;
-            phase <= 0;
-            bit_pos <= 0;
+            // MINIMAL FIX: removed phase/bit_pos init
             tx_shift0 <= 0; tx_shift1 <= 0; tx_shift2 <= 0;
             rx_shift0 <= 0; rx_shift1 <= 0; rx_shift2 <= 0;
             received_next0 <= 0; received_next1 <= 0; received_next2 <= 0;
@@ -136,8 +137,7 @@ module tt_um_tmr_voter (
                     cs_n_out <= 0;
                     state <= 1;  // TX_RX
                     bit_cnt <= 0;
-                    phase <= 0;
-                    bit_pos <= 0;
+                    // MINIMAL FIX: removed phase/bit_pos reset
                 end
             end
             if (state == 1) begin  // TX_RX
@@ -147,8 +147,9 @@ module tt_um_tmr_voter (
                         rx_shift0 <= {rx_shift0[6:0], miso0};
                         rx_shift1 <= {rx_shift1[6:0], miso1};
                         rx_shift2 <= {rx_shift2[6:0], miso2};
-                        if (bit_pos == 7) begin
-                            case (phase)
+                        // MINIMAL FIX: use bit_cnt[2:0] for byte end + bit_cnt[4:3] for phase
+                        if (bit_cnt[2:0] == 3'b111) begin
+                            case (bit_cnt[4:3])
                                 0: begin
                                     received_next0 <= {rx_shift0[6:0], miso0};
                                     received_next1 <= {rx_shift1[6:0], miso1};
@@ -163,19 +164,15 @@ module tt_um_tmr_voter (
                             endcase
                         end
                     end else begin  // Falling edge: shift/load
-                        if (bit_pos == 7) begin
-                            if (phase < 2) begin
-                                tx_shift0 <= (phase == 0) ? {7'b0000000, p0_agree} : switches;
-                                tx_shift1 <= (phase == 0) ? {7'b0000000, p1_agree} : switches;
-                                tx_shift2 <= (phase == 0) ? {7'b0000000, p2_agree} : switches;
-                                phase <= phase + 1;
-                            end
-                            bit_pos <= 0;
+                        // MINIMAL FIX: clean byte load + increment
+                        if (bit_cnt[2:0] == 3'b000 && bit_cnt[4:3] < 2) begin
+                            tx_shift0 <= (bit_cnt[4:3] == 0) ? {7'b0000000, p0_agree} : switches;
+                            tx_shift1 <= (bit_cnt[4:3] == 0) ? {7'b0000000, p1_agree} : switches;
+                            tx_shift2 <= (bit_cnt[4:3] == 0) ? {7'b0000000, p2_agree} : switches;
                         end else begin
                             tx_shift0 <= {tx_shift0[6:0], 1'b0};
                             tx_shift1 <= {tx_shift1[6:0], 1'b0};
                             tx_shift2 <= {tx_shift2[6:0], 1'b0};
-                            bit_pos <= bit_pos + 1;
                         end
                         bit_cnt <= bit_cnt + 1;
                         if (bit_cnt == 23) begin
