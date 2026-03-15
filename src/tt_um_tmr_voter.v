@@ -106,7 +106,6 @@ module tt_um_tmr_voter (
     assign next_prn = {current_prn[6:0], prng_fb};
 
     reg [12:0] timer;     // For 1kHz voting (~8192 cycles at 8.192MHz)
-    reg [2:0] valid_count;  // Count of valid responses this cycle
 
     always @(posedge clk or negedge rst_n) begin
         if (!rst_n) begin
@@ -123,7 +122,6 @@ module tt_um_tmr_voter (
             desired0 <= 0; desired1 <= 0; desired2 <= 0;
             sclk_out <= 0;
             cs_n_out <= 1;
-            valid_count <= 0;
         end else begin
             timer <= timer + 1;
             if (timer == 0) begin  // timer_done: Start new cycle
@@ -182,7 +180,6 @@ module tt_um_tmr_voter (
                             p0_out <= new_p0_out;
                             p1_out <= new_p1_out;
                             p2_out <= new_p2_out;
-                            valid_count <= new_valid_count;
                             if (new_valid_count >= 2) begin
                                 voted <= new_voted;
                             end  // else voted remains untouched (safe, as per previous state)
