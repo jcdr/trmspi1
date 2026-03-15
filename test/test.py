@@ -51,7 +51,7 @@ async def test_project(dut):
     cocotb.start_soon(drive_slave(dut, 4, bits))
     cocotb.start_soon(drive_slave(dut, 6, bits))
 
-    await Timer(35, unit="us")   # one full transaction
+    await Timer(1, unit="ms")   # one full transaction
     voted = int(dut.uo_out.value)
     dut._log.info(f"voted after transaction = 0x{voted:02X}")
     assert voted == 0xA5, f"Expected 0xA5, got 0x{voted:02X}"

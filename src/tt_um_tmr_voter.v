@@ -111,7 +111,7 @@ module tt_um_tmr_voter (
     always @(posedge clk or negedge rst_n) begin
         if (!rst_n) begin
             current_prn <= 8'h01;  // Initial seed, shared with CPUs
-            timer <= 0;
+            timer <= 13'd4096;  // start first transaction after ~0.5 ms (half of the 1 kHz cycle)
             voted <= 0;
             p0_out <= 0; p1_out <= 0; p2_out <= 0;
             state <= 0;
