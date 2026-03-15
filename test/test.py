@@ -86,6 +86,7 @@ async def perform_transaction(dut, cpu_list):
         dut.uio_in.value = new_val
 
     await wait_raising(dut, dut.uio_out, 0)          # CS high
+    await Timer(1, unit="us")
 
 
 @cocotb.test()
