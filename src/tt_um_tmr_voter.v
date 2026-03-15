@@ -142,21 +142,21 @@ module tt_um_tmr_voter (
                 if (sclk_div == 3'b111) begin
                     sclk_out <= ~sclk_out;
                     if (sclk_out == 0) begin  // Rising edge: sample
-                        rx_shift0 <= {rx_shift0[6:0], miso0};
-                        rx_shift1 <= {rx_shift1[6:0], miso1};
-                        rx_shift2 <= {rx_shift2[6:0], miso2};
+                        rx_shift0 <= (rx_shift0 << 1) | {7'b0, miso0};
+                        rx_shift1 <= (rx_shift1 << 1) | {7'b0, miso1};
+                        rx_shift2 <= (rx_shift2 << 1) | {7'b0, miso2};
                         // MINIMAL FIX: use bit_cnt[2:0] for byte end + bit_cnt[4:3] for phase
                         if (bit_cnt[2:0] == 3'b111) begin
                             case (bit_cnt[4:3])
                                 0: begin
-                                    received_next0 <= {rx_shift0[6:0], miso0};
-                                    received_next1 <= {rx_shift1[6:0], miso1};
-                                    received_next2 <= {rx_shift2[6:0], miso2};
+                                    received_next0 <= (rx_shift0 << 1) | {7'b0, miso0};
+                                    received_next1 <= (rx_shift1 << 1) | {7'b0, miso1};
+                                    received_next2 <= (rx_shift2 << 1) | {7'b0, miso2};
                                 end
                                 1: begin
-                                    desired0 <= {rx_shift0[6:0], miso0};
-                                    desired1 <= {rx_shift1[6:0], miso1};
-                                    desired2 <= {rx_shift2[6:0], miso2};
+                                    desired0 <= (rx_shift0 << 1) | {7'b0, miso0};
+                                    desired1 <= (rx_shift1 << 1) | {7'b0, miso1};
+                                    desired2 <= (rx_shift2 << 1) | {7'b0, miso2};
                                 end
                                 // 2: ignore unused
                             endcase
