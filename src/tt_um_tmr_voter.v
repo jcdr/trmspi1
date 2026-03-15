@@ -55,6 +55,11 @@ module tt_um_tmr_voter (
     wire miso0 = uio_in[2];
     wire miso1 = uio_in[4];
     wire miso2 = uio_in[6];
+    wire _unused_uio_in_0 = uio_in[0];  // silences the warning
+    wire _unused_uio_in_1 = uio_in[1];  // silences the warning
+    wire _unused_uio_in_3 = uio_in[3];  // silences the warning
+    wire _unused_uio_in_5 = uio_in[5];  // silences the warning
+    wire _unused_uio_in_7 = uio_in[7];  // silences the warning
 
     reg [2:0] sclk_div;           // For SCLK generation (~8.192MHz / 8 = 1.024MHz)
     always @(posedge clk or negedge rst_n) begin
