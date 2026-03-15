@@ -22,7 +22,10 @@ async def drive_slave(dut, miso_idx, bits):
     await wait_falling(dut, dut.uio_out, 0)          # CS low
     for i in range(24):
         await wait_falling(dut, dut.uio_out, 1)      # drive MISO on falling SCLK
-        dut.uio_in[miso_idx].value = bits[i]
+        # SAFE bit drive (uio_in is packed — cocotb forbids direct indexing)
+        current = int(dut.uio_in.value)
+        new_val = (current & ~(1 << miso_idx)) | (bits[i] << miso_idx)
+        dut.uio_in.value = new_val
 
 @cocotb.test()
 async def test_project(dut):
@@ -51,7 +54,7 @@ async def test_project(dut):
     cocotb.start_soon(drive_slave(dut, 4, bits))
     cocotb.start_soon(drive_slave(dut, 6, bits))
 
-    await Timer(1, unit="ms")   # one full transaction
+    await Timer(1, unit="ms")   # one full transaction (matches your change)
     voted = int(dut.uo_out.value)
     dut._log.info(f"voted after transaction = 0x{voted:02X}")
     assert voted == 0xA5, f"Expected 0xA5, got 0x{voted:02X}"
