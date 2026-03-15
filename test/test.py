@@ -19,12 +19,19 @@ async def wait_falling(dut, signal, bit):
         prev = curr
 
 async def drive_all_slaves(dut, bits):
-    await wait_falling(dut, dut.uio_out, 0)          # CS low
-    for i in range(24):
-        await wait_falling(dut, dut.uio_out, 1)      # drive on falling SCLK
+    await wait_falling(dut, dut.uio_out, 0)          # wait for CS low
+
+    # === CRITICAL MODE 0 FIX ===
+    # Drive FIRST bit immediately (while SCLK still low)
+    current = int(dut.uio_in.value)
+    mask = ~((1<<2) | (1<<4) | (1<<6)) & 0xFF
+    new_val = (current & mask) | (bits[0] << 2) | (bits[0] << 4) | (bits[0] << 6)
+    dut.uio_in.value = new_val
+
+    # Then normal falling-edge drive for the remaining 23 bits
+    for i in range(1, 24):
+        await wait_falling(dut, dut.uio_out, 1)
         current = int(dut.uio_in.value)
-        # Clear the three MISO bits first, then set the new value (this fixes 0xFF)
-        mask = ~((1<<2) | (1<<4) | (1<<6)) & 0xFF
         new_val = (current & mask) | (bits[i] << 2) | (bits[i] << 4) | (bits[i] << 6)
         dut.uio_in.value = new_val
 
@@ -47,16 +54,14 @@ async def test_project(dut):
     dut._log.info("=== First transaction: All valid, should set voted = 0xA5 ===")
     dut.ui_in.value = 0xA5
     current_prn = 0x01
-    next_prn = compute_next(current_prn)          # will be 0x02
-
-    # Full 24-bit Slave→Master frame: next_prn + desired (0xA5) + unused (0x00)
+    next_prn = compute_next(current_prn)          # 0x02
     bytes_to_send = [next_prn, 0xA5, 0x00]
     bits = []
     for b in bytes_to_send:
         for j in range(8):
             bits.append((b >> (7 - j)) & 1)
 
-    dut._log.info(f"Sending on all MISO lines: next_prn=0x{next_prn:02X}, desired=0xA5, unused=0x00")
+    dut._log.info(f"Sending on MISO: next_prn=0x{next_prn:02X} / desired=0xA5 / unused=0x00")
 
     cocotb.start_soon(drive_all_slaves(dut, bits))
 
