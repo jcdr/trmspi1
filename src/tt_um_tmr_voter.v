@@ -86,7 +86,7 @@ module tt_um_tmr_voter (
     wire [7:0] new_p0_out = valid0 ? desired0 : p0_out;
     wire [7:0] new_p1_out = valid1 ? desired1 : p1_out;
     wire [7:0] new_p2_out = valid2 ? desired2 : p2_out;
-    wire [2:0] new_valid_count = valid0 + valid1 + valid2;
+    wire [2:0] new_valid_count = {2'b0, valid0} + {2'b0, valid1} + {2'b0, valid2};
     wire [7:0] new_voted = (new_p0_out & new_p1_out) | (new_p0_out & new_p2_out) | (new_p1_out & new_p2_out);
 
     reg [7:0] p0_out, p1_out, p2_out;
