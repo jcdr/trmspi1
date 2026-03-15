@@ -28,6 +28,7 @@ class SimulatedCPU:
 
     def frame_get_bits(self):
         """Return 24-bit MISO stream + log (called by perform_transaction)"""
+        self.next_prn = compute_next(send_next)   # advance internal PRNG
         send_next = self.next_prn
         if self._valid:
             send_bytes = [send_next, self._desired, 0x00]
@@ -39,7 +40,6 @@ class SimulatedCPU:
         cocotb.log.info(f"CPU {self.name} → sending bytes: next_prn=0x{send_next:02X}, "
                         f"desired=0x{self._desired:02X}, unused=0x00")
 
-        self.next_prn = compute_next(send_next)   # advance internal PRNG
         return bits
 
 
