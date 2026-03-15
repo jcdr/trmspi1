@@ -3,8 +3,20 @@
 
 import cocotb
 from cocotb.clock import Clock
-from cocotb.triggers import ClockCycles
-from cocotb.triggers import RisingEdge, FallingEdge, Timer
+from cocotb.triggers import ClockCycles, RisingEdge, FallingEdge, Timer
+
+def compute_next(prn):
+    fb = ((prn >> 7) & 1) ^ ((prn >> 5) & 1) ^ ((prn >> 4) & 1) ^ ((prn >> 3) & 1)
+    return ((prn & 0x7F) << 1) | fb
+
+async def drive_slave(dut, miso_idx, bits):
+    await FallingEdge(dut.uio_out[0])
+    dut.uio_in[miso_idx].value = bits[0]
+    for i in range(23):
+        await RisingEdge(dut.uio_out[1])
+        await FallingEdge(dut.uio_out[1])
+        dut.uio_in[miso_idx].value = bits[i + 1]
+    await RisingEdge(dut.uio_out[1])
 
 @cocotb.test()
 async def test_project(dut):
@@ -22,21 +34,50 @@ async def test_project(dut):
     dut.rst_n.value = 0
     await ClockCycles(dut.clk, 10)
     dut.rst_n.value = 1
+    await ClockCycles(dut.clk, 10)
 
     dut._log.info("Test project behavior")
 
-    # Set the input values you want to test
-    dut.ui_in.value = 0
-    dut.uio_in.value = 0
+    # First cycle: All valid, desired=0xA5
+    dut.ui_in.value = 0xA5
+    current_prn = 0x01
+    next_prn = compute_next(current_prn)
+    frame = (next_prn << 16) | (0xA5 << 8) | 0x00
+    bits = [(frame >> (23 - i)) & 1 for i in range(24)]
+    cocotb.start_soon(drive_slave(dut, 2, bits))
+    cocotb.start_soon(drive_slave(dut, 4, bits))
+    cocotb.start_soon(drive_slave(dut, 6, bits))
+    await RisingEdge(dut.uio_out[0])  # Wait for transaction end
+    await Timer(1, units="ns")
+    assert dut.uo_out.value == 0xA5
 
-    # Wait for one clock cycle to see the output values
-    await ClockCycles(dut.clk, 1)
+    # Second cycle: All valid, desired=0x5A
+    dut.ui_in.value = 0x5A
+    current_prn = next_prn
+    next_prn = compute_next(current_prn)
+    frame = (next_prn << 16) | (0x5A << 8) | 0x00
+    bits = [(frame >> (23 - i)) & 1 for i in range(24)]
+    cocotb.start_soon(drive_slave(dut, 2, bits))
+    cocotb.start_soon(drive_slave(dut, 4, bits))
+    cocotb.start_soon(drive_slave(dut, 6, bits))
+    await FallingEdge(dut.uio_out[0])  # Wait for next start
+    await RisingEdge(dut.uio_out[0])  # Wait for end
+    await Timer(1, units="ns")
+    assert dut.uo_out.value == 0x5A
 
-    # The following assersion is just an example of how to check the output values.
-    # Change it to match the actual expected output of your module:
-    assert dut.uo_out.value == 0
-
-    # Keep testing the module by changing the input values, waiting for
-    # one or more clock cycles, and asserting the expected output values.
+    # Third cycle: One valid with desired=0x3C, two invalid -> no update, stays 0x5A
+    dut.ui_in.value = 0x3C
+    current_prn = next_prn
+    next_prn = compute_next(current_prn)
+    bits_good = [(next_prn << 16) | (0x3C << 8) | 0x00]
+    bits_good = [((next_prn << 16) | (0x3C << 8) | 0x00 >> (23 - i)) & 1 for i in range(24)]
+    bits_bad = [ (0xFF << 16) | (0x3C << 8) | 0x00 >> (23 - i) & 1 for i in range(24)]
+    cocotb.start_soon(drive_slave(dut, 2, bits_good))
+    cocotb.start_soon(drive_slave(dut, 4, bits_bad))
+    cocotb.start_soon(drive_slave(dut, 6, bits_bad))
+    await FallingEdge(dut.uio_out[0])
+    await RisingEdge(dut.uio_out[0])
+    await Timer(1, units="ns")
+    assert dut.uo_out.value == 0x5A
 
     dut._log.info("Test complete")
