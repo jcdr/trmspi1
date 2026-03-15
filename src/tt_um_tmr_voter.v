@@ -18,11 +18,12 @@
 // In other words: Data is clocked out on the falling edge and clocked in on the rising edge, with SCLK starting low.
 // This matches the default SPI mode on the RP2350 microcontroller (e.g., in the Raspberry Pi Pico 2 SDK and hardware).
 // Frame size: 24 bits
-// Master to Slave: seed[7:0], agreement_byte[7:0] ({7'b0, agreement_bit}), switches[7:0]
-// Slave to Master: seed_echo[7:0], desired_out[7:0], unused[7:0]
+// Master to Slave: current_prn[7:0], agreement_byte[7:0] ({7'b0, agreement_bit}), switches[7:0]
+// Slave to Master: next_prn[7:0], desired_out[7:0], unused[7:0]
 // Agreement bit: 1 if CPU output matches voted (part of majority), 0 otherwise
-// If seed_echo != seed, invalid frame
 // PRNG: 8-bit LFSR, polynomial x^8 + x^6 + x^5 + x^4 + 1, initial 8'h01 shared with CPUs
+// Validation: Compute next_prn from sent current_prn; if received next_prn != computed next_prn,
+// discard that CPU's frame (don't update pX_out)
 // Cycle: 1kHz voting (timer 13-bit, ~1ms at 8.192MHz clk)
 // SCLK: 1.024MHz (main clk / 8)
 
@@ -71,14 +72,12 @@ module tt_um_tmr_voter (
     wire mosi1 = shift_out1[23];
     wire mosi2 = shift_out2[23];
 
-    wire [7:0] seed_echo0 = shift_in0[23:16];
-    wire [7:0] seed_echo1 = shift_in1[23:16];
-    wire [7:0] seed_echo2 = shift_in2[23:16];
+    wire [7:0] received_next0 = shift_in0[23:16];
+    wire [7:0] received_next1 = shift_in1[23:16];
+    wire [7:0] received_next2 = shift_in2[23:16];
     wire [7:0] desired0 = shift_in0[15:8];
     wire [7:0] desired1 = shift_in1[15:8];
     wire [7:0] desired2 = shift_in2[15:8];
-
-    wire all_valid = (seed_echo0 == prng_seed) & (seed_echo1 == prng_seed) & (seed_echo2 == prng_seed);
 
     wire [7:0] voted_temp;
     majority_voter3 temp_voter (
@@ -95,15 +94,23 @@ module tt_um_tmr_voter (
     wire p1_agree = (p1_out == voted);
     wire p2_agree = (p2_out == voted);
 
-    reg [7:0] prng_seed;  // Current seed
-    reg [12:0] timer;     // For 1kHz voting (~8192 cycles at 8.192MHz)
+    reg [7:0] current_prn;  // Current PRN (sent to CPUs)
+    reg [7:0] next_prn;     // Computed next PRN (for comparison)
 
-    // PRNG: 8-bit LFSR, polynomial x^8 + x^6 + x^5 + x^4 + 1
-    wire prng_fb = prng_seed[7] ^ prng_seed[5] ^ prng_seed[4] ^ prng_seed[3];
+    // PRNG algorithm: 8-bit LFSR, polynomial x^8 + x^6 + x^5 + x^4 + 1 (taps at positions 8,6,5,4)
+    // This is a well-known maximal-length LFSR for 8 bits, period 255, simple bitwise XOR implementation.
+    // Parameters: Initial seed 8'h01 (shared with CPUs), feedback = bit7 ^ bit5 ^ bit4 ^ bit3
+    wire prng_fb = current_prn[7] ^ current_prn[5] ^ current_prn[4] ^ current_prn[3];
+    always @(*) begin
+        next_prn = {current_prn[6:0], prng_fb};
+    end
+
+    reg [12:0] timer;     // For 1kHz voting (~8192 cycles at 8.192MHz)
+    reg [2:0] valid_count;  // Count of valid responses this cycle
 
     always @(posedge clk or negedge rst_n) begin
         if (!rst_n) begin
-            prng_seed <= 8'h01;  // Initial seed, shared with CPUs
+            current_prn <= 8'h01;  // Initial seed, shared with CPUs
             timer <= 0;
             voted <= 0;
             p0_out <= 0; p1_out <= 0; p2_out <= 0;
@@ -113,17 +120,18 @@ module tt_um_tmr_voter (
             shift_in0 <= 0; shift_in1 <= 0; shift_in2 <= 0;
             sclk_out <= 0;
             cs_n_out <= 1;
+            valid_count <= 0;
         end else begin
             timer <= timer + 1;
-            if (timer == 0) begin  // timer_done
-                prng_seed <= {prng_seed[6:0], prng_fb};
+            if (timer == 0) begin  // timer_done: Start new cycle
                 if (state == 0) begin  // IDLE
-                    shift_out0 <= {prng_seed, {7'b0000000, p0_agree}, switches};
-                    shift_out1 <= {prng_seed, {7'b0000000, p1_agree}, switches};
-                    shift_out2 <= {prng_seed, {7'b0000000, p2_agree}, switches};
+                    shift_out0 <= {current_prn, {7'b0000000, p0_agree}, switches};
+                    shift_out1 <= {current_prn, {7'b0000000, p1_agree}, switches};
+                    shift_out2 <= {current_prn, {7'b0000000, p2_agree}, switches};
                     cs_n_out <= 0;
                     state <= 1;  // TX_RX
                     bit_cnt <= 0;
+                    valid_count <= 0;
                 end
             end
             if (state == 1) begin  // TX_RX
@@ -142,12 +150,30 @@ module tt_um_tmr_voter (
                     if (bit_cnt == 24) begin
                         cs_n_out <= 1;
                         state <= 0;
-                        // Process received
-                        if (seed_echo0 == prng_seed) p0_out <= desired0;
-                        if (seed_echo1 == prng_seed) p1_out <= desired1;
-                        if (seed_echo2 == prng_seed) p2_out <= desired2;
-                        if (all_valid) voted <= voted_temp;
-                        else voted <= 0;
+                        // Process received: Validate each CPU's next_prn
+                        if (received_next0 == next_prn) begin
+                            p0_out <= desired0;
+                            valid_count <= valid_count + 1;
+                        end  // else keep p0_out untouched
+                        if (received_next1 == next_prn) begin
+                            p1_out <= desired1;
+                            valid_count <= valid_count + 1;
+                        end  // else keep p1_out untouched
+                        if (received_next2 == next_prn) begin
+                            p2_out <= desired2;
+                            valid_count <= valid_count + 1;
+                        end  // else keep p2_out untouched
+                        // Update voted only if at least 2 valid (majority possible); else keep previous voted
+                        if (valid_count >= 2) begin
+                            majority_voter3 voter (
+                                .in0(p0_out),
+                                .in1(p1_out),
+                                .in2(p2_out),
+                                .out(voted)
+                            );
+                        end  // else voted remains untouched (safe, as per previous state)
+                        // Advance PRNG for next cycle
+                        current_prn <= next_prn;
                     end
                 end
             end
