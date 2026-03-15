@@ -51,6 +51,15 @@ async def wait_falling(dut, signal, bit):
             break
         prev = curr
 
+async def wait_raising(dut, signal, bit):
+    prev = signal.value[bit]
+    while True:
+        await signal.value_change
+        curr = signal.value[bit]
+        if curr == 1 and prev == 0:
+            break
+        prev = curr
+
 
 async def perform_transaction(dut, cpu_list):
     """One transfer that works with ANY list of CPU instances"""
@@ -75,6 +84,8 @@ async def perform_transaction(dut, cpu_list):
         for cpu, bits in zip(cpu_list, bits_list):
             new_val |= (bits[i] << cpu.miso_bit_idx)
         dut.uio_in.value = new_val
+
+    await wait_raising(dut, dut.uio_out, 0)          # CS high
 
 
 @cocotb.test()
