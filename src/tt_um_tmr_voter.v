@@ -57,7 +57,6 @@ module tt_um_tmr_voter (
     wire miso2 = uio_in[6];
 
     reg [2:0] sclk_div;           // For SCLK generation (~8.192MHz / 8 = 1.024MHz)
-    wire sclk_int = sclk_div[2];  // Toggle every 4 clk (divide by 8 overall)
     always @(posedge clk or negedge rst_n) begin
         if (!rst_n) sclk_div <= 0;
         else sclk_div <= sclk_div + 1;
@@ -66,18 +65,17 @@ module tt_um_tmr_voter (
     reg sclk_out, cs_n_out;
     reg [4:0] bit_cnt;
     reg state;  // 0=IDLE, 1=TX_RX
-    reg [23:0] shift_out0, shift_out1, shift_out2;
-    reg [23:0] shift_in0, shift_in1, shift_in2;
-    wire mosi0 = shift_out0[23];
-    wire mosi1 = shift_out1[23];
-    wire mosi2 = shift_out2[23];
+    reg [1:0] phase;
+    reg [2:0] bit_pos;
 
-    wire [7:0] received_next0 = shift_in0[23:16];
-    wire [7:0] received_next1 = shift_in1[23:16];
-    wire [7:0] received_next2 = shift_in2[23:16];
-    wire [7:0] desired0 = shift_in0[15:8];
-    wire [7:0] desired1 = shift_in1[15:8];
-    wire [7:0] desired2 = shift_in2[15:8];
+    reg [7:0] tx_shift0, tx_shift1, tx_shift2;
+    reg [7:0] rx_shift0, rx_shift1, rx_shift2;
+    wire mosi0 = tx_shift0[7];
+    wire mosi1 = tx_shift1[7];
+    wire mosi2 = tx_shift2[7];
+
+    reg [7:0] received_next0, received_next1, received_next2;
+    reg [7:0] desired0, desired1, desired2;
 
     // NEW: Combinational wires for updates (fixes accumulation and update timing)
     wire valid0 = (received_next0 == next_prn);
@@ -97,15 +95,13 @@ module tt_um_tmr_voter (
     wire p2_agree = (p2_out == voted);
 
     reg [7:0] current_prn;  // Current PRN (sent to CPUs)
-    reg [7:0] next_prn;     // Computed next PRN (for comparison)
+    wire [7:0] next_prn;     // Computed next PRN (for comparison)
 
     // PRNG algorithm: 8-bit LFSR, polynomial x^8 + x^6 + x^5 + x^4 + 1 (taps at positions 8,6,5,4)
     // This is a well-known maximal-length LFSR for 8 bits, period 255, simple bitwise XOR implementation.
     // Parameters: Initial seed 8'h01 (shared with CPUs), feedback = bit7 ^ bit5 ^ bit4 ^ bit3
     wire prng_fb = current_prn[7] ^ current_prn[5] ^ current_prn[4] ^ current_prn[3];
-    always @(*) begin
-        next_prn = {current_prn[6:0], prng_fb};
-    end
+    assign next_prn = {current_prn[6:0], prng_fb};
 
     reg [12:0] timer;     // For 1kHz voting (~8192 cycles at 8.192MHz)
     reg [2:0] valid_count;  // Count of valid responses this cycle
@@ -118,8 +114,12 @@ module tt_um_tmr_voter (
             p0_out <= 0; p1_out <= 0; p2_out <= 0;
             state <= 0;
             bit_cnt <= 0;
-            shift_out0 <= 0; shift_out1 <= 0; shift_out2 <= 0;
-            shift_in0 <= 0; shift_in1 <= 0; shift_in2 <= 0;
+            phase <= 0;
+            bit_pos <= 0;
+            tx_shift0 <= 0; tx_shift1 <= 0; tx_shift2 <= 0;
+            rx_shift0 <= 0; rx_shift1 <= 0; rx_shift2 <= 0;
+            received_next0 <= 0; received_next1 <= 0; received_next2 <= 0;
+            desired0 <= 0; desired1 <= 0; desired2 <= 0;
             sclk_out <= 0;
             cs_n_out <= 1;
             valid_count <= 0;
@@ -127,41 +127,71 @@ module tt_um_tmr_voter (
             timer <= timer + 1;
             if (timer == 0) begin  // timer_done: Start new cycle
                 if (state == 0) begin  // IDLE
-                    shift_out0 <= {current_prn, {7'b0000000, p0_agree}, switches};
-                    shift_out1 <= {current_prn, {7'b0000000, p1_agree}, switches};
-                    shift_out2 <= {current_prn, {7'b0000000, p2_agree}, switches};
+                    tx_shift0 <= current_prn;
+                    tx_shift1 <= current_prn;
+                    tx_shift2 <= current_prn;
+                    rx_shift0 <= 0;
+                    rx_shift1 <= 0;
+                    rx_shift2 <= 0;
                     cs_n_out <= 0;
                     state <= 1;  // TX_RX
                     bit_cnt <= 0;
-                    valid_count <= 0;
+                    phase <= 0;
+                    bit_pos <= 0;
                 end
             end
             if (state == 1) begin  // TX_RX
-                if (sclk_div == 3'b111) begin  // Toggle SCLK every 8 main clk cycles
+                if (sclk_div == 3'b111) begin
                     sclk_out <= ~sclk_out;
-                    if (sclk_out == 0) begin  // Shift on fall
-                        shift_out0 <= {shift_out0[22:0], 1'b0};
-                        shift_out1 <= {shift_out1[22:0], 1'b0};
-                        shift_out2 <= {shift_out2[22:0], 1'b0};
+                    if (sclk_out == 0) begin  // Rising edge: sample
+                        rx_shift0 <= {rx_shift0[6:0], miso0};
+                        rx_shift1 <= {rx_shift1[6:0], miso1};
+                        rx_shift2 <= {rx_shift2[6:0], miso2};
+                        if (bit_pos == 7) begin
+                            case (phase)
+                                0: begin
+                                    received_next0 <= {rx_shift0[6:0], miso0};
+                                    received_next1 <= {rx_shift1[6:0], miso1};
+                                    received_next2 <= {rx_shift2[6:0], miso2};
+                                end
+                                1: begin
+                                    desired0 <= {rx_shift0[6:0], miso0};
+                                    desired1 <= {rx_shift1[6:0], miso1};
+                                    desired2 <= {rx_shift2[6:0], miso2};
+                                end
+                                // 2: ignore unused
+                            endcase
+                        end
+                    end else begin  // Falling edge: shift/load
+                        if (bit_pos == 7) begin
+                            if (phase < 2) begin
+                                tx_shift0 <= (phase == 0) ? {7'b0000000, p0_agree} : switches;
+                                tx_shift1 <= (phase == 0) ? {7'b0000000, p1_agree} : switches;
+                                tx_shift2 <= (phase == 0) ? {7'b0000000, p2_agree} : switches;
+                                phase <= phase + 1;
+                            end
+                            bit_pos <= 0;
+                        end else begin
+                            tx_shift0 <= {tx_shift0[6:0], 1'b0};
+                            tx_shift1 <= {tx_shift1[6:0], 1'b0};
+                            tx_shift2 <= {tx_shift2[6:0], 1'b0};
+                            bit_pos <= bit_pos + 1;
+                        end
                         bit_cnt <= bit_cnt + 1;
-                    end else begin  // Sample on rise
-                        shift_in0 <= {shift_in0[22:0], miso0};
-                        shift_in1 <= {shift_in1[22:0], miso1};
-                        shift_in2 <= {shift_in2[22:0], miso2};
-                    end
-                    if (bit_cnt == 24) begin
-                        cs_n_out <= 1;
-                        state <= 0;
-                        // CHANGED: Use combinational wires for validation/accumulation/updates
-                        p0_out <= new_p0_out;
-                        p1_out <= new_p1_out;
-                        p2_out <= new_p2_out;
-                        valid_count <= new_valid_count;
-                        if (new_valid_count >= 2) begin
-                            voted <= new_voted;
-                        end  // else voted remains untouched (safe, as per previous state)
-                        // Advance PRNG for next cycle
-                        current_prn <= next_prn;
+                        if (bit_cnt == 23) begin
+                            cs_n_out <= 1;
+                            state <= 0;
+                            // Process received: Use combinational wires for validation/accumulation/updates
+                            p0_out <= new_p0_out;
+                            p1_out <= new_p1_out;
+                            p2_out <= new_p2_out;
+                            valid_count <= new_valid_count;
+                            if (new_valid_count >= 2) begin
+                                voted <= new_voted;
+                            end  // else voted remains untouched (safe, as per previous state)
+                            // Advance PRNG for next cycle
+                            current_prn <= next_prn;
+                        end
                     end
                 end
             end
