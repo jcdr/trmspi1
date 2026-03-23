@@ -1,11 +1,14 @@
 # SPDX-FileCopyrightText: © 2024 Tiny Tapeout
 # SPDX-License-Identifier: Apache-2.0
 
+import random
+
 import cocotb
 from cocotb.clock import Clock
 from cocotb.triggers import ClockCycles, Timer
 
 RESET_PRGS = [0x2A, 0x54, 0xA8]
+STRESS_TEST_SEED = 0x5EED1234
 
 
 def format_bits(value):
@@ -73,7 +76,7 @@ class SimulatedCPU:
         self._good_prg = valid
         self._desired_valid = desired_valid
 
-    def frame_get_bits(self):
+    def frame_get_bits(self, log_frame=True):
         """Return 24-bit MISO stream + log (called by perform_transaction)"""
         if self._good_prg:
             self.last_sent_bytes = [self.staged_prn, self._desired, self._desired_valid]
@@ -86,8 +89,11 @@ class SimulatedCPU:
 
         bits = [((b >> (7 - j)) & 1) for b in self.last_sent_bytes for j in range(8)]
 
-        cocotb.log.info(f"CPU {self.name} → sending bytes: echoed_prn=0x{self.last_sent_bytes[0]:02X}, "
-                        f"desired=0x{self._desired:02X}, valid=0x{self._desired_valid:02X}")
+        if log_frame:
+            cocotb.log.info(
+                f"CPU {self.name} → sending bytes: echoed_prn=0x{self.last_sent_bytes[0]:02X}, "
+                f"desired=0x{self._desired:02X}, valid=0x{self._desired_valid:02X}"
+            )
 
         return bits
 
@@ -114,12 +120,12 @@ async def wait_raising(dut, signal, bit):
         prev = curr
 
 
-async def perform_transaction(dut, cpu_list):
+async def perform_transaction(dut, cpu_list, log_frame=True):
     """One transfer that works with ANY list of CPU instances"""
     await wait_falling(dut, dut.uio_out, 0)          # CS low
 
     # Get bits from every CPU (this is the clean dereference you asked for)
-    bits_list = [cpu.frame_get_bits() for cpu in cpu_list]
+    bits_list = [cpu.frame_get_bits(log_frame=log_frame) for cpu in cpu_list]
     master_bits = [[] for _ in cpu_list]
 
     # First bit immediately (Mode 0)
@@ -179,15 +185,17 @@ async def setup_testbench(dut):
     ]
     return cpus, VoterModel()
 
-async def run_frame(dut, cpus, model, title, switches):
-    dut._log.info(title)
+async def run_frame(dut, cpus, model, title, switches, log_frame=True):
+    if log_frame:
+        dut._log.info(title)
     dut.ui_in.value = switches
     previous_out = int(dut.uo_out.value)
 
-    dut._log.info(
-        f"Chip state before frame: switches=0x{switches:02X} ({format_bits(switches)}), "
-        f"out=0x{previous_out:02X} ({format_bits(previous_out)})"
-    )
+    if log_frame:
+        dut._log.info(
+            f"Chip state before frame: switches=0x{switches:02X} ({format_bits(switches)}), "
+            f"out=0x{previous_out:02X} ({format_bits(previous_out)})"
+        )
 
     expected_majority = list(model.majority_bytes)
     expected_echoes = []
@@ -201,8 +209,9 @@ async def run_frame(dut, cpus, model, title, switches):
         valids.append(cpu._desired_valid)
         frame_valids.append(cpu._good_prg)
 
-    master_bytes = await perform_transaction(dut, cpus)
-    log_master_frames(cpus, master_bytes)
+    master_bytes = await perform_transaction(dut, cpus, log_frame=log_frame)
+    if log_frame:
+        log_master_frames(cpus, master_bytes)
 
     for idx, sent in enumerate(master_bytes):
         assert cpus[idx].last_sent_bytes[0] == expected_echoes[idx]
@@ -211,10 +220,11 @@ async def run_frame(dut, cpus, model, title, switches):
 
     expected_voted = model.apply_frame(outputs, valids, frame_valids)
     assert int(dut.uo_out.value) == expected_voted
-    dut._log.info(
-        f"Chip state after frame:  switches=0x{switches:02X} ({format_bits(switches)}), "
-        f"out=0x{expected_voted:02X} ({format_bits(expected_voted)})"
-    )
+    if log_frame:
+        dut._log.info(
+            f"Chip state after frame:  switches=0x{switches:02X} ({format_bits(switches)}), "
+            f"out=0x{expected_voted:02X} ({format_bits(expected_voted)})"
+        )
     return master_bytes
 
 
@@ -234,6 +244,26 @@ def log_master_frames(cpus, master_bytes):
             f"Master -> {cpu.name}: next_prn=0x{sent[0]:02X}, "
             f"switches=0x{sent[1]:02X}, majority=0x{sent[2]:02X}"
         )
+
+
+def random_valid_mask(rng):
+    valid = 0
+    for bit in range(8):
+        if rng.randrange(100) < 75:
+            valid |= 1 << bit
+    return valid
+
+
+def configure_random_frame(cpus, rng):
+    switches = rng.randrange(256)
+    outputs = [rng.randrange(256) for _ in cpus]
+    valids = [random_valid_mask(rng) for _ in cpus]
+
+    bad_cpu = rng.randrange(len(cpus)) if rng.randrange(100) < 12 else None
+    frame_valids = [idx != bad_cpu for idx in range(len(cpus))]
+
+    configure_cpu_frame(cpus, outputs, frame_valids, valids)
+    return switches, outputs, valids, frame_valids
 
 
 async def reach_masked_vote(dut, cpus, model):
@@ -575,3 +605,38 @@ async def test_all_bad_prgs_keep_the_vote_and_clear_majority_bytes(dut):
     )
     assert [sent[2] for sent in master_bytes] == [0x00, 0x00, 0x00]
     dut._log.info("Test 13 PASSED")
+
+
+@cocotb.test()
+async def test_random_traffic_keeps_running_without_reset(dut):
+    cpus, model = await setup_testbench(dut)
+    rng = random.Random(STRESS_TEST_SEED)
+
+    dut._log.info(
+        f"=== Test 14: 256 random frames without reset (seed=0x{STRESS_TEST_SEED:08X}) ==="
+    )
+
+    for frame in range(256):
+        switches, outputs, valids, frame_valids = configure_random_frame(cpus, rng)
+        await run_frame(
+            dut,
+            cpus,
+            model,
+            "",
+            switches,
+            log_frame=False,
+        )
+
+        if frame % 32 == 0:
+            dut._log.info(
+                f"Stress start: frame {frame + 1:03d}/256, "
+                f"switches=0x{switches:02X}, good_prgs={sum(frame_valids)}/3, "
+                f"out=0x{int(dut.uo_out.value):02X}"
+            )
+        elif frame % 32 == 31:
+            dut._log.info(
+                f"Stress progress: frame {frame + 1:03d}/256, "
+                f"out=0x{int(dut.uo_out.value):02X}"
+            )
+
+    dut._log.info("Test 14 PASSED")
