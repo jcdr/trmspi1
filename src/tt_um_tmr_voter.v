@@ -126,14 +126,30 @@ module tt_um_tmr_voter (
     wire [7:0] new_p0_valid = valid0 ? desired_valid0 : p0_valid;
     wire [7:0] new_p1_valid = valid1 ? desired_valid1 : p1_valid;
     wire [7:0] new_p2_valid = valid2 ? desired_valid2 : p2_valid;
-    wire [7:0] voted_one = (new_p0_valid & new_p1_valid & new_p0_out & new_p1_out) |
-                           (new_p0_valid & new_p2_valid & new_p0_out & new_p2_out) |
-                           (new_p1_valid & new_p2_valid & new_p1_out & new_p2_out);
-    wire [7:0] voted_zero = (new_p0_valid & new_p1_valid & ~new_p0_out & ~new_p1_out) |
-                            (new_p0_valid & new_p2_valid & ~new_p0_out & ~new_p2_out) |
-                            (new_p1_valid & new_p2_valid & ~new_p1_out & ~new_p2_out);
-    wire [7:0] new_voted = (voted & ~(voted_one | voted_zero)) | voted_one;
-    wire [7:0] new_voted_valid = voted_one | voted_zero;
+    wire [7:0] majority0;
+    wire [7:0] majority1;
+    wire [7:0] majority2;
+    wire [7:0] new_voted;
+    wire [7:0] new_voted_valid = majority0 | majority1 | majority2;
+
+    genvar i;
+    generate
+        for (i = 0; i < 8; i = i + 1) begin : gen_voter_bits
+            tt_um_tmr_voter_bit voter_bit (
+                .desired0(new_p0_out[i]),
+                .valid0(new_p0_valid[i]),
+                .desired1(new_p1_out[i]),
+                .valid1(new_p1_valid[i]),
+                .desired2(new_p2_out[i]),
+                .valid2(new_p2_valid[i]),
+                .previous_voted(voted[i]),
+                .voted(new_voted[i]),
+                .majority0(majority0[i]),
+                .majority1(majority1[i]),
+                .majority2(majority2[i])
+            );
+        end
+    endgenerate
 
     reg [7:0] p0_out, p1_out, p2_out;
     reg [7:0] p0_valid, p1_valid, p2_valid;
