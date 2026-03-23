@@ -192,6 +192,7 @@ async def run_frame(dut, cpus, model, title, switches):
         frame_valids.append(cpu._good_prg)
 
     master_bytes = await perform_transaction(dut, cpus)
+    log_master_frames(cpus, master_bytes)
 
     for idx, sent in enumerate(master_bytes):
         assert cpus[idx].last_sent_bytes[0] == expected_echoes[idx]
@@ -211,6 +212,16 @@ def configure_all_cpus(cpus, desired_out, valid=True, desired_valid=0xFF):
 def configure_cpu_frame(cpus, outputs, frame_valids, valids):
     for cpu, output, frame_valid, valid_mask in zip(cpus, outputs, frame_valids, valids):
         cpu.frame_set_desired_out(output, valid=frame_valid, desired_valid=valid_mask)
+
+
+def log_master_frames(cpus, master_bytes):
+    for cpu, sent in zip(cpus, master_bytes):
+        cocotb.log.info(
+            f"Master -> {cpu.name}: next_prn=0x{sent[0]:02X}, "
+            f"switches=0x{sent[1]:02X}, majority=0x{sent[2]:02X} "
+            f"(echo {'ok' if cpu._good_prg else 'bad'}, "
+            f"desired=0x{cpu._desired:02X}, valid=0x{cpu._desired_valid:02X})"
+        )
 
 
 async def reach_masked_vote(dut, cpus, model):
