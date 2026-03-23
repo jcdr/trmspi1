@@ -57,17 +57,16 @@ module tt_um_tmr_spi_slice #(
 
     reg [7:0] tx_shift;
     reg [7:0] rx_shift;
-    reg [7:0] received_prn;
     reg [7:0] desired_r;
     reg [7:0] desired_valid_r;
     reg [7:0] current_prn;
     reg [7:0] previous_voted_r;
     reg [7:0] majority_r;
+    reg       frame_valid_r;
 
     wire prng_fb = current_prn[7] ^ current_prn[5] ^ current_prn[4] ^ current_prn[3];
     wire [7:0] next_prn = {current_prn[6:0], prng_fb};
-    wire frame_valid = (received_prn == current_prn);
-    wire [7:0] valid_mask = {8{frame_valid}} & desired_valid_r;
+    wire [7:0] valid_mask = {8{frame_valid_r}} & desired_valid_r;
     wire [7:0] majority_next = valid_mask & ~(desired_r ^ voted);
 
     assign mosi = tx_shift[7];
@@ -77,23 +76,24 @@ module tt_um_tmr_spi_slice #(
         if (!rst_n) begin
             tx_shift <= 0;
             rx_shift <= 0;
-            received_prn <= 0;
             desired_r <= 0;
             desired_valid_r <= 0;
             current_prn <= INITIAL_PRN;
             previous_voted_r <= 0;
             majority_r <= 0;
+            frame_valid_r <= 0;
         end else begin
             if (start_frame) begin
                 tx_shift <= next_prn;
                 rx_shift <= 0;
+                frame_valid_r <= 0;
             end
 
             if (sample_en) begin
                 rx_shift <= (rx_shift << 1) | {7'b0, miso};
                 if (bit_cnt[2:0] == 3'b111) begin
                     case (bit_cnt[4:3])
-                        0: received_prn <= (rx_shift << 1) | {7'b0, miso};
+                        0: frame_valid_r <= ((rx_shift << 1) | {7'b0, miso}) == current_prn;
                         1: desired_r <= (rx_shift << 1) | {7'b0, miso};
                         2: desired_valid_r <= (rx_shift << 1) | {7'b0, miso};
                     endcase
