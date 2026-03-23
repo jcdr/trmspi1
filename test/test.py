@@ -60,6 +60,14 @@ def fault_targets_byte(fault, direction, cpu_index, byte_index):
     )
 
 
+def choose_random_fault(rng, cpu_count, cpu_index=None):
+    return {
+        "direction": rng.choice(["miso", "mosi"]),
+        "cpu_index": rng.randrange(cpu_count) if cpu_index is None else cpu_index,
+        "bit_index": rng.randrange(24),
+    }
+
+
 def vote_resolved_bits(resolved):
     voted = 0
     for bit in range(8):
@@ -100,6 +108,7 @@ class SimulatedCPU:
         self.miso_bit_idx = miso_bit_idx          # 2, 4 or 6
         self.mosi_bit_idx = miso_bit_idx + 1
         self.staged_prn = reset_prg
+        self.expected_echo_prn = reset_prg
         self.observed_switches = 0x00
         self.last_sent_bytes = [reset_prg, 0x00, 0xFF]
         self._desired = 0x00
@@ -133,9 +142,10 @@ class SimulatedCPU:
 
         return bits
 
-    def frame_accept_master_bytes(self, master_bytes):
-        self.staged_prn = master_bytes[0]
-        self.observed_switches = master_bytes[1]
+    def frame_accept_master_bytes(self, raw_master_bytes, received_master_bytes):
+        self.expected_echo_prn = raw_master_bytes[0]
+        self.staged_prn = received_master_bytes[0]
+        self.observed_switches = received_master_bytes[1]
 
 
 async def wait_falling(dut, signal, bit):
@@ -165,6 +175,7 @@ async def perform_transaction(dut, cpu_list, log_frame=True, fault=None):
     bits_list = [cpu.frame_get_bits(log_frame=log_frame) for cpu in cpu_list]
     if fault is not None and fault["direction"] == "miso":
         inject_fault_bit(bits_list[fault["cpu_index"]], fault["bit_index"])
+    raw_master_bits = [[] for _ in cpu_list]
     master_bits = [[] for _ in cpu_list]
 
     # First bit immediately (Mode 0)
@@ -177,7 +188,9 @@ async def perform_transaction(dut, cpu_list, log_frame=True, fault=None):
     await wait_raising(dut, dut.uio_out, 1)
     current = int(dut.uio_out.value)
     for idx, cpu in enumerate(cpu_list):
-        bit = (current >> cpu.mosi_bit_idx) & 1
+        raw_bit = (current >> cpu.mosi_bit_idx) & 1
+        raw_master_bits[idx].append(raw_bit)
+        bit = raw_bit
         if (
             fault is not None
             and fault["direction"] == "mosi"
@@ -198,7 +211,9 @@ async def perform_transaction(dut, cpu_list, log_frame=True, fault=None):
         await wait_raising(dut, dut.uio_out, 1)
         current = int(dut.uio_out.value)
         for idx, cpu in enumerate(cpu_list):
-            bit = (current >> cpu.mosi_bit_idx) & 1
+            raw_bit = (current >> cpu.mosi_bit_idx) & 1
+            raw_master_bits[idx].append(raw_bit)
+            bit = raw_bit
             if (
                 fault is not None
                 and fault["direction"] == "mosi"
@@ -212,10 +227,11 @@ async def perform_transaction(dut, cpu_list, log_frame=True, fault=None):
     await Timer(1, unit="us")
 
     slave_bytes = [bits_to_bytes(bits) for bits in bits_list]
+    raw_master_bytes = [bits_to_bytes(bits) for bits in raw_master_bits]
     master_bytes = [bits_to_bytes(bits) for bits in master_bits]
-    for cpu, sent in zip(cpu_list, master_bytes):
-        cpu.frame_accept_master_bytes(sent)
-    return master_bytes, slave_bytes
+    for cpu, raw_sent, received_sent in zip(cpu_list, raw_master_bytes, master_bytes):
+        cpu.frame_accept_master_bytes(raw_sent, received_sent)
+    return master_bytes, slave_bytes, raw_master_bytes
 
 
 async def setup_testbench(dut):
@@ -270,13 +286,13 @@ async def run_frame(
     frame_valids = []
 
     for cpu in cpus:
-        expected_prns.append(cpu.staged_prn)
+        expected_prns.append(cpu.expected_echo_prn)
         expected_echoes.append(cpu.staged_prn if cpu._good_prg else cpu.staged_prn ^ 0xFF)
         outputs.append(cpu._desired)
         valids.append(cpu._desired_valid)
         frame_valids.append(cpu._good_prg)
 
-    master_bytes, slave_bytes = await perform_transaction(
+    master_bytes, slave_bytes, raw_master_bytes = await perform_transaction(
         dut,
         cpus,
         log_frame=log_frame,
@@ -322,6 +338,7 @@ async def run_frame(
         return {
             "master_bytes": master_bytes,
             "slave_bytes": slave_bytes,
+            "raw_master_bytes": raw_master_bytes,
             "errors": errors,
             "actual_voted": actual_voted,
         }
@@ -332,24 +349,26 @@ async def run_frame(
 def log_random_frame_summary(
     dut,
     frame_number,
-    switches,
-    previous_out,
-    actual_out,
+    hardware_in,
+    software_out,
+    software_in,
+    hardware_out,
     cpus,
     master_bytes,
+    slave_bytes,
+    fault,
     errors,
 ):
     parts = [
         f"F{frame_number:03d}",
-        f"in={switches:02X}",
-        f"out={previous_out:02X}->{actual_out:02X}",
+        f"hIsO[{hardware_in:02X}/{software_out:02X}]",
     ]
-    for cpu, master in zip(cpus, master_bytes):
-        slave = cpu.last_sent_bytes
+    for idx, (cpu, master, slave) in enumerate(zip(cpus, master_bytes, slave_bytes)):
         parts.append(
-            f"{cpu.name}:M[{format_frame_bytes(master)}]"
-            f"/S[{format_frame_bytes(slave, [not cpu._good_prg, False, False])}]"
+            f"{cpu.name}:M[{format_frame_bytes(master, [fault_targets_byte(fault, 'mosi', idx, byte) for byte in range(3)])}]"
+            f"/S[{format_frame_bytes(slave, [fault_targets_byte(fault, 'miso', idx, byte) for byte in range(3)])}]"
         )
+    parts.append(f"sIhO[{software_in:02X}/{hardware_out:02X}]")
     parts.append("FAIL" if errors else "OK")
     dut._log.info(" | ".join(parts))
 
@@ -372,24 +391,13 @@ def log_master_frames(cpus, master_bytes):
         )
 
 
-def random_valid_mask(rng):
-    valid = 0
-    for bit in range(8):
-        if rng.randrange(100) < 75:
-            valid |= 1 << bit
-    return valid
+def configure_reflexive_frame(cpus):
+    for cpu in cpus:
+        cpu.frame_set_desired_out(cpu.observed_switches, valid=True, desired_valid=0xFF)
 
 
-def configure_random_frame(cpus, rng):
-    switches = rng.randrange(256)
-    outputs = [rng.randrange(256) for _ in cpus]
-    valids = [random_valid_mask(rng) for _ in cpus]
-
-    bad_cpu = rng.randrange(len(cpus)) if rng.randrange(100) < 12 else None
-    frame_valids = [idx != bad_cpu for idx in range(len(cpus))]
-
-    configure_cpu_frame(cpus, outputs, frame_valids, valids)
-    return switches, outputs, valids, frame_valids
+def vote_cpu_observed_switches(cpus):
+    return vote_resolved_bits([cpu.observed_switches for cpu in cpus])
 
 
 async def reach_masked_vote(dut, cpus, model):
@@ -737,15 +745,19 @@ async def test_all_bad_prgs_keep_the_vote_and_clear_majority_bytes(dut):
 async def test_random_traffic_keeps_running_without_reset(dut):
     cpus, model = await setup_testbench(dut)
     rng = random.Random(STRESS_TEST_SEED)
+    unstable_cpu = None
 
     dut._log.info(
-        f"=== Test 14: 256 random frames without reset (seed=0x{STRESS_TEST_SEED:08X}) ==="
+        f"=== Test 14: 256 random one-bit frame faults without reset (seed=0x{STRESS_TEST_SEED:08X}) ==="
     )
 
     for frame in range(256):
-        switches, outputs, valids, frame_valids = configure_random_frame(cpus, rng)
-        previous_out = int(dut.uo_out.value)
-        master_bytes, errors, actual_out = await run_frame(
+        switches = rng.randrange(256)
+        software_out = vote_cpu_observed_switches(cpus)
+        configure_reflexive_frame(cpus)
+        fault = choose_random_fault(rng, len(cpus), cpu_index=unstable_cpu)
+
+        details = await run_frame(
             dut,
             cpus,
             model,
@@ -753,17 +765,37 @@ async def test_random_traffic_keeps_running_without_reset(dut):
             switches,
             log_frame=False,
             return_errors=True,
+            fault=fault,
         )
+        actual_out = details["actual_voted"]
+        software_in = vote_cpu_observed_switches(cpus)
+        errors = list(details["errors"])
+
+        if software_in != switches:
+            errors.append(f"sI=0x{software_in:02X} expected hI=0x{switches:02X}")
+        if actual_out != software_out:
+            errors.append(f"hO=0x{actual_out:02X} expected sO=0x{software_out:02X}")
+
         log_random_frame_summary(
             dut,
             frame + 1,
             switches,
-            previous_out,
+            software_out,
+            software_in,
             actual_out,
             cpus,
-            master_bytes,
+            details["master_bytes"],
+            details["slave_bytes"],
+            fault,
             errors,
         )
         assert not errors, "; ".join(errors)
+        if (
+            fault["direction"] == "mosi"
+            and bit_index_to_byte_index(fault["bit_index"]) in (0, 1)
+        ):
+            unstable_cpu = fault["cpu_index"]
+        else:
+            unstable_cpu = None
 
     dut._log.info("Test 14 PASSED")
