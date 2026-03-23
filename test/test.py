@@ -37,7 +37,7 @@ def format_byte(value, highlight=False):
 def format_frame_bytes(values, highlights=None):
     if highlights is None:
         highlights = [False] * len(values)
-    return "/".join(
+    return ",".join(
         format_byte(value, highlight=highlight)
         for value, highlight in zip(values, highlights)
     )
@@ -121,7 +121,7 @@ class SimulatedCPU:
         self._good_prg = valid
         self._desired_valid = desired_valid
 
-    def frame_get_bits(self, log_frame=True):
+    def frame_get_bits(self, log_frame=False):
         """Return 24-bit MISO stream + log (called by perform_transaction)"""
         if self._good_prg:
             self.last_sent_bytes = [self.staged_prn, self._desired, self._desired_valid]
@@ -133,12 +133,6 @@ class SimulatedCPU:
             ]
 
         bits = [((b >> (7 - j)) & 1) for b in self.last_sent_bytes for j in range(8)]
-
-        if log_frame:
-            cocotb.log.info(
-                f"CPU {self.name} → sending bytes: echoed_prn=0x{self.last_sent_bytes[0]:02X}, "
-                f"desired=0x{self._desired:02X}, valid=0x{self._desired_valid:02X}"
-            )
 
         return bits
 
@@ -266,17 +260,12 @@ async def run_frame(
     log_frame=True,
     return_errors=False,
     fault=None,
+    frame_number=None,
+    log_summary=True,
 ):
     if log_frame:
         dut._log.info(title)
     dut.ui_in.value = switches
-    previous_out = int(dut.uo_out.value)
-
-    if log_frame:
-        dut._log.info(
-            f"Chip state before frame: switches=0x{switches:02X} ({format_bits(switches)}), "
-            f"out=0x{previous_out:02X} ({format_bits(previous_out)})"
-        )
 
     expected_majority = list(model.majority_bytes)
     expected_echoes = []
@@ -295,11 +284,9 @@ async def run_frame(
     master_bytes, slave_bytes, raw_master_bytes = await perform_transaction(
         dut,
         cpus,
-        log_frame=log_frame,
+        log_frame=False,
         fault=fault,
     )
-    if log_frame:
-        log_master_frames(cpus, master_bytes)
 
     errors = []
     for idx, sent in enumerate(master_bytes):
@@ -329,10 +316,19 @@ async def run_frame(
     actual_voted = int(dut.uo_out.value)
     if actual_voted != expected_voted:
         errors.append(f"out=0x{actual_voted:02X} expected 0x{expected_voted:02X}")
-    if log_frame:
-        dut._log.info(
-            f"Chip state after frame:  switches=0x{switches:02X} ({format_bits(switches)}), "
-            f"out=0x{expected_voted:02X} ({format_bits(expected_voted)})"
+    if log_summary:
+        log_frame_summary(
+            dut,
+            frame_number,
+            switches,
+            vote_resolved_bits(outputs),
+            vote_cpu_observed_switches(cpus),
+            actual_voted,
+            cpus,
+            master_bytes,
+            slave_bytes,
+            fault,
+            errors,
         )
     if return_errors:
         return {
@@ -346,7 +342,7 @@ async def run_frame(
     return master_bytes
 
 
-def log_random_frame_summary(
+def log_frame_summary(
     dut,
     frame_number,
     hardware_in,
@@ -359,18 +355,18 @@ def log_random_frame_summary(
     fault,
     errors,
 ):
-    parts = [
-        f"F{frame_number:03d}",
-        f"hIsO[{hardware_in:02X}/{software_out:02X}]",
-    ]
+    parts = []
+    if frame_number is not None:
+        parts.append(f"F{frame_number:03d}")
+    parts.append(f"hIsO[{hardware_in:02X},{software_out:02X}]")
     for idx, (cpu, master, slave) in enumerate(zip(cpus, master_bytes, slave_bytes)):
         parts.append(
             f"{cpu.name}:M[{format_frame_bytes(master, [fault_targets_byte(fault, 'mosi', idx, byte) for byte in range(3)])}]"
-            f"/S[{format_frame_bytes(slave, [fault_targets_byte(fault, 'miso', idx, byte) for byte in range(3)])}]"
+            f":S[{format_frame_bytes(slave, [fault_targets_byte(fault, 'miso', idx, byte) for byte in range(3)])}]"
         )
-    parts.append(f"sIhO[{software_in:02X}/{hardware_out:02X}]")
+    parts.append(f"sIhO[{software_in:02X},{hardware_out:02X}]")
     parts.append("FAIL" if errors else "OK")
-    dut._log.info(" | ".join(parts))
+    dut._log.info(" ".join(parts))
 
 
 def configure_all_cpus(cpus, desired_out, valid=True, desired_valid=0xFF):
@@ -381,14 +377,6 @@ def configure_all_cpus(cpus, desired_out, valid=True, desired_valid=0xFF):
 def configure_cpu_frame(cpus, outputs, frame_valids, valids):
     for cpu, output, frame_valid, valid_mask in zip(cpus, outputs, frame_valids, valids):
         cpu.frame_set_desired_out(output, valid=frame_valid, desired_valid=valid_mask)
-
-
-def log_master_frames(cpus, master_bytes):
-    for cpu, sent in zip(cpus, master_bytes):
-        cocotb.log.info(
-            f"Master -> {cpu.name}: next_prn=0x{sent[0]:02X}, "
-            f"switches=0x{sent[1]:02X}, majority=0x{sent[2]:02X}"
-        )
 
 
 def configure_reflexive_frame(cpus):
@@ -766,6 +754,8 @@ async def test_random_traffic_keeps_running_without_reset(dut):
             log_frame=False,
             return_errors=True,
             fault=fault,
+            frame_number=frame + 1,
+            log_summary=False,
         )
         actual_out = details["actual_voted"]
         software_in = vote_cpu_observed_switches(cpus)
@@ -775,8 +765,7 @@ async def test_random_traffic_keeps_running_without_reset(dut):
             errors.append(f"sI=0x{software_in:02X} expected hI=0x{switches:02X}")
         if actual_out != software_out:
             errors.append(f"hO=0x{actual_out:02X} expected sO=0x{software_out:02X}")
-
-        log_random_frame_summary(
+        log_frame_summary(
             dut,
             frame + 1,
             switches,
