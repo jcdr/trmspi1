@@ -203,28 +203,70 @@ async def run_frame(dut, cpus, model, title, switches):
     return master_bytes
 
 
+def configure_all_cpus(cpus, desired_out, valid=True, desired_valid=0xFF):
+    for cpu in cpus:
+        cpu.frame_set_desired_out(desired_out, valid=valid, desired_valid=desired_valid)
+
+
+def configure_cpu_frame(cpus, outputs, frame_valids, valids):
+    for cpu, output, frame_valid, valid_mask in zip(cpus, outputs, frame_valids, valids):
+        cpu.frame_set_desired_out(output, valid=frame_valid, desired_valid=valid_mask)
+
+
+async def reach_masked_vote(dut, cpus, model):
+    configure_all_cpus(cpus, 0xA5)
+    await run_frame(dut, cpus, model, "=== Prime vote: all valid -> 0xA5 ===", 0xA5)
+
+    configure_cpu_frame(
+        cpus,
+        [0x0F, 0x03, 0x05],
+        [True, True, True],
+        [0x0F, 0x03, 0x05],
+    )
+    await run_frame(dut, cpus, model, "=== Prime vote: per-bit valid masks -> 0xA7 ===", 0x5A)
+    assert int(dut.uo_out.value) == 0xA7
+
+
 @cocotb.test()
-async def test_project(dut):
+async def test_all_valid_vote(dut):
     cpus, model = await setup_testbench(dut)
 
-    for cpu in cpus:
-        cpu.frame_set_desired_out(0xA5, valid=True, desired_valid=0xFF)
+    configure_all_cpus(cpus, 0xA5)
     await run_frame(dut, cpus, model, "=== Test 1: All valid -> voted = 0xA5 ===", 0xA5)
     assert int(dut.uo_out.value) == 0xA5
     dut._log.info("Test 1 PASSED")
 
-    cpus[0].frame_set_desired_out(0x0F, valid=True, desired_valid=0x0F)
-    cpus[1].frame_set_desired_out(0x03, valid=True, desired_valid=0x03)
-    cpus[2].frame_set_desired_out(0x05, valid=True, desired_valid=0x05)
+
+@cocotb.test()
+async def test_per_bit_valid_masks(dut):
+    cpus, model = await setup_testbench(dut)
+
+    configure_all_cpus(cpus, 0xA5)
+    await run_frame(dut, cpus, model, "=== Prime vote: all valid -> 0xA5 ===", 0xA5)
+
+    configure_cpu_frame(
+        cpus,
+        [0x0F, 0x03, 0x05],
+        [True, True, True],
+        [0x0F, 0x03, 0x05],
+    )
     await run_frame(dut, cpus, model, "=== Test 2: Per-bit valid masks drive the vote ===", 0x5A)
     assert int(dut.uo_out.value) == 0xA7
     dut._log.info("Test 2 PASSED")
 
-    cpus[0].frame_set_desired_out(0x08, valid=True, desired_valid=0x08)
-    cpus[1].frame_set_desired_out(0xF0, valid=False, desired_valid=0xF0)
-    cpus[2].frame_set_desired_out(0x00, valid=False, desired_valid=0xFF)
+
+@cocotb.test()
+async def test_one_valid_frame_keeps_vote(dut):
+    cpus, model = await setup_testbench(dut)
+
+    await reach_masked_vote(dut, cpus, model)
+
+    configure_cpu_frame(
+        cpus,
+        [0x08, 0xF0, 0x00],
+        [True, False, False],
+        [0x08, 0xF0, 0xFF],
+    )
     await run_frame(dut, cpus, model, "=== Test 3: Only one valid -> voted stays unchanged ===", 0x3C)
     assert int(dut.uo_out.value) == 0xA7
     dut._log.info("Test 3 PASSED (voted correctly unchanged)")
-
-    dut._log.info("=== ALL TESTS PASSED ===")
