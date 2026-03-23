@@ -18,12 +18,12 @@
 // In other words: Data is clocked out on the falling edge and clocked in on the rising edge, with SCLK starting low.
 // This matches the default SPI mode on the RP2350 microcontroller (e.g., in the Raspberry Pi Pico 2 SDK and hardware).
 // Frame size: 24 bits
-// Master to Slave: current_prn[7:0], agreement_byte[7:0] ({7'b0, agreement_bit}), switches[7:0]
-// Slave to Master: next_prn[7:0], desired_out[7:0], unused[7:0]
+// Master to Slave: next_prn[7:0], agreement_byte[7:0] ({7'b0, agreement_bit}), switches[7:0]
+// Slave to Master: echoed_prn[7:0], desired_out[7:0], unused[7:0]
 // Agreement bit: 1 if CPU output matches voted (part of majority), 0 otherwise
-// PRNG: 8-bit LFSR, polynomial x^8 + x^6 + x^5 + x^4 + 1, initial 8'h01 shared with CPUs
-// Validation: Compute next_prn from sent current_prn; if received next_prn != computed next_prn,
-// discard that CPU's frame (don't update pX_out)
+// PRNG: 8-bit LFSR, polynomial x^8 + x^6 + x^5 + x^4 + 1, initial 8'h2A shared with CPUs
+// Validation: Compute next_prn from current_prn, send it, and compare the received echoed_prn
+// against the previous current_prn. Invalid frames don't update pX_out.
 // Cycle: 1kHz voting (timer 13-bit, ~1ms at 8.192MHz clk)
 // SCLK: 1.024MHz (main clk / 8)
 
@@ -87,9 +87,9 @@ module tt_um_tmr_voter (
     reg [7:0] desired0, desired1, desired2;
 
     // NEW: Combinational wires for updates (fixes accumulation and update timing)
-    wire valid0 = (received_next0 == next_prn);
-    wire valid1 = (received_next1 == next_prn);
-    wire valid2 = (received_next2 == next_prn);
+    wire valid0 = (received_next0 == current_prn);
+    wire valid1 = (received_next1 == current_prn);
+    wire valid2 = (received_next2 == current_prn);
     wire [7:0] new_p0_out = valid0 ? desired0 : p0_out;
     wire [7:0] new_p1_out = valid1 ? desired1 : p1_out;
     wire [7:0] new_p2_out = valid2 ? desired2 : p2_out;
@@ -103,8 +103,8 @@ module tt_um_tmr_voter (
     wire p1_agree = (p1_out == voted);
     wire p2_agree = (p2_out == voted);
 
-    reg [7:0] current_prn;  // Current PRN (sent to CPUs)
-    wire [7:0] next_prn;     // Computed next PRN (for comparison)
+    reg [7:0] current_prn;  // Previous PRN expected back from CPUs this frame
+    wire [7:0] next_prn;    // Next PRN sent to CPUs this frame
 
     // PRNG algorithm: 8-bit LFSR, polynomial x^8 + x^6 + x^5 + x^4 + 1 (taps at positions 8,6,5,4)
     // This is a well-known maximal-length LFSR for 8 bits, period 255, simple bitwise XOR implementation.
@@ -116,7 +116,7 @@ module tt_um_tmr_voter (
 
     always @(posedge clk or negedge rst_n) begin
         if (!rst_n) begin
-            current_prn <= 8'h01;  // Initial seed, shared with CPUs
+            current_prn <= 8'h2A;  // Initial seed, shared with CPUs
             timer <= 13'd4096;  // start first transaction after ~0.5 ms (half of the 1 kHz cycle)
             voted <= 0;
             p0_out <= 0; p1_out <= 0; p2_out <= 0;
@@ -133,9 +133,9 @@ module tt_um_tmr_voter (
             timer <= timer + 1;
             if (timer == 0) begin  // timer_done: Start new cycle
                 if (state == 0) begin  // IDLE
-                    tx_shift0 <= current_prn;
-                    tx_shift1 <= current_prn;
-                    tx_shift2 <= current_prn;
+                    tx_shift0 <= next_prn;
+                    tx_shift1 <= next_prn;
+                    tx_shift2 <= next_prn;
                     rx_shift0 <= 0;
                     rx_shift1 <= 0;
                     rx_shift2 <= 0;
@@ -169,11 +169,15 @@ module tt_um_tmr_voter (
                             endcase
                         end
                     end else begin  // Falling edge: shift/load
-                        // MINIMAL FIX: clean byte load + increment
-                        if (bit_cnt[2:0] == 3'b000 && bit_cnt[4:3] < 2) begin
-                            tx_shift0 <= (bit_cnt[4:3] == 0) ? {7'b0000000, p0_agree} : switches;
-                            tx_shift1 <= (bit_cnt[4:3] == 0) ? {7'b0000000, p1_agree} : switches;
-                            tx_shift2 <= (bit_cnt[4:3] == 0) ? {7'b0000000, p2_agree} : switches;
+                        // Load the next TX byte after the previous 8 bits have completed
+                        if (bit_cnt == 5'd7) begin
+                            tx_shift0 <= {7'b0000000, p0_agree};
+                            tx_shift1 <= {7'b0000000, p1_agree};
+                            tx_shift2 <= {7'b0000000, p2_agree};
+                        end else if (bit_cnt == 5'd15) begin
+                            tx_shift0 <= switches;
+                            tx_shift1 <= switches;
+                            tx_shift2 <= switches;
                         end else begin
                             tx_shift0 <= {tx_shift0[6:0], 1'b0};
                             tx_shift1 <= {tx_shift1[6:0], 1'b0};
