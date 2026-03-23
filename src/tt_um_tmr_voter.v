@@ -39,20 +39,6 @@ module tt_um_tmr_voter_bit (
 
 endmodule
 
-module tt_um_tmr_spi_bit (
-    input  wire desired0,
-    input  wire valid0,
-    input  wire previous_voted,
-    input  wire voted,
-    output wire resolved,
-    output wire majority
-);
-
-    assign resolved = valid0 ? desired0 : previous_voted;
-    assign majority = valid0 & (desired0 == voted);
-
-endmodule
-
 module tt_um_tmr_spi_slice #(
     parameter [7:0] INITIAL_PRN = 8'h2A
 ) (
@@ -271,36 +257,20 @@ module tt_um_tmr_voter (
     genvar i;
     generate
         for (i = 0; i < 8; i = i + 1) begin : gen_voter_bits
-            tt_um_tmr_spi_bit spi0_bit (
-                .desired0(desired0[i]),
-                .valid0(frame_valid0 & desired_valid0[i]),
-                .previous_voted(p0_out[i]),
-                .voted(new_voted[i]),
-                .resolved(resolved0[i]),
-                .majority(majority0[i])
-            );
-            tt_um_tmr_spi_bit spi1_bit (
-                .desired0(desired1[i]),
-                .valid0(frame_valid1 & desired_valid1[i]),
-                .previous_voted(p1_out[i]),
-                .voted(new_voted[i]),
-                .resolved(resolved1[i]),
-                .majority(majority1[i])
-            );
-            tt_um_tmr_spi_bit spi2_bit (
-                .desired0(desired2[i]),
-                .valid0(frame_valid2 & desired_valid2[i]),
-                .previous_voted(p2_out[i]),
-                .voted(new_voted[i]),
-                .resolved(resolved2[i]),
-                .majority(majority2[i])
-            );
+            assign resolved0[i] = (frame_valid0 & desired_valid0[i]) ? desired0[i] : p0_out[i];
+            assign resolved1[i] = (frame_valid1 & desired_valid1[i]) ? desired1[i] : p1_out[i];
+            assign resolved2[i] = (frame_valid2 & desired_valid2[i]) ? desired2[i] : p2_out[i];
+
             tt_um_tmr_voter_bit voter_bit (
                 .in0(resolved0[i]),
                 .in1(resolved1[i]),
                 .in2(resolved2[i]),
                 .voted(new_voted[i])
             );
+
+            assign majority0[i] = frame_valid0 & desired_valid0[i] & (desired0[i] == new_voted[i]);
+            assign majority1[i] = frame_valid1 & desired_valid1[i] & (desired1[i] == new_voted[i]);
+            assign majority2[i] = frame_valid2 & desired_valid2[i] & (desired2[i] == new_voted[i]);
         end
     endgenerate
 
