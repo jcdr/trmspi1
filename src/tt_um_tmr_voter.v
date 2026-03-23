@@ -52,6 +52,88 @@ module tt_um_tmr_spi_bit (
 
 endmodule
 
+module tt_um_tmr_spi_slice #(
+    parameter [7:0] INITIAL_PRN = 8'h2A
+) (
+    input  wire       clk,
+    input  wire       rst_n,
+    input  wire       start_frame,
+    input  wire       sample_en,
+    input  wire       shift_en,
+    input  wire [4:0] bit_cnt,
+    input  wire       miso,
+    input  wire [7:0] switches,
+    input  wire [7:0] voted,
+    input  wire [7:0] majority,
+    output wire       mosi,
+    output wire [7:0] desired,
+    output wire [7:0] desired_valid,
+    output wire [7:0] previous_voted,
+    output wire       frame_valid
+);
+
+    reg [7:0] tx_shift;
+    reg [7:0] rx_shift;
+    reg [7:0] received_prn;
+    reg [7:0] desired_r;
+    reg [7:0] desired_valid_r;
+    reg [7:0] current_prn;
+    reg [7:0] previous_voted_r;
+
+    wire prng_fb = current_prn[7] ^ current_prn[5] ^ current_prn[4] ^ current_prn[3];
+    wire [7:0] next_prn = {current_prn[6:0], prng_fb};
+
+    assign mosi = tx_shift[7];
+    assign desired = desired_r;
+    assign desired_valid = desired_valid_r;
+    assign previous_voted = previous_voted_r;
+    assign frame_valid = (received_prn == current_prn);
+
+    always @(posedge clk or negedge rst_n) begin
+        if (!rst_n) begin
+            tx_shift <= 0;
+            rx_shift <= 0;
+            received_prn <= 0;
+            desired_r <= 0;
+            desired_valid_r <= 0;
+            current_prn <= INITIAL_PRN;
+            previous_voted_r <= 0;
+        end else begin
+            if (start_frame) begin
+                tx_shift <= next_prn;
+                rx_shift <= 0;
+            end
+
+            if (sample_en) begin
+                rx_shift <= (rx_shift << 1) | {7'b0, miso};
+                if (bit_cnt[2:0] == 3'b111) begin
+                    case (bit_cnt[4:3])
+                        0: received_prn <= (rx_shift << 1) | {7'b0, miso};
+                        1: desired_r <= (rx_shift << 1) | {7'b0, miso};
+                        2: desired_valid_r <= (rx_shift << 1) | {7'b0, miso};
+                    endcase
+                end
+            end
+
+            if (shift_en) begin
+                if (bit_cnt == 5'd7) begin
+                    tx_shift <= switches;
+                end else if (bit_cnt == 5'd15) begin
+                    tx_shift <= majority;
+                end else begin
+                    tx_shift <= {tx_shift[6:0], 1'b0};
+                end
+
+                if (bit_cnt == 5'd23) begin
+                    previous_voted_r <= voted;
+                    current_prn <= next_prn;
+                end
+            end
+        end
+    end
+
+endmodule
+
 module tt_um_tmr_voter (
     input  wire [7:0] ui_in,    // Dedicated inputs (switches)
     output wire [7:0] uo_out,   // Dedicated outputs (to display)
