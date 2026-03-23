@@ -137,6 +137,10 @@ Waveforms are written to `test/tb.fst`.
 - one dedicated `miso` and one dedicated `mosi` line per CPU
 - demo board clock at `8.192 MHz`
 
+On the Tiny Tapeout demo board, the RP2350 controller can be used for basic bring-up.
+The RP2350 `SPI1` peripheral in slave mode is connected to `cs_n`, `sclk`, `miso0`, and `mosi0`.
+For simple majority experiments, `miso0` and `miso2` can be driven from the same RP2350 transmit signal so that two processor channels return the same data.
+
 Each external CPU should:
 - stage the received `next_prn`
 - compute `desired_out`
