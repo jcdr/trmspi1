@@ -235,6 +235,7 @@ async def setup_testbench(dut):
     cocotb.start_soon(clock.start())
 
     # Reset
+    dut._frame_number = 0
     dut.ena.value = 1
     dut.ui_in.value = 0
     dut.uio_in.value = 0
@@ -265,6 +266,9 @@ async def run_frame(
 ):
     if log_frame:
         dut._log.info(title)
+    if frame_number is None:
+        dut._frame_number += 1
+        frame_number = dut._frame_number
     dut.ui_in.value = switches
 
     expected_majority = list(model.majority_bytes)
