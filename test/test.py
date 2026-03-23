@@ -8,6 +8,10 @@ from cocotb.triggers import ClockCycles, Timer
 RESET_PRGS = [0x2A, 0x54, 0xA8]
 
 
+def format_bits(value):
+    return f"{value:08b}"
+
+
 def bits_to_bytes(bits):
     data = []
     for i in range(0, len(bits), 8):
@@ -178,6 +182,12 @@ async def setup_testbench(dut):
 async def run_frame(dut, cpus, model, title, switches):
     dut._log.info(title)
     dut.ui_in.value = switches
+    previous_out = int(dut.uo_out.value)
+
+    dut._log.info(
+        f"Chip state before frame: switches=0x{switches:02X} ({format_bits(switches)}), "
+        f"out=0x{previous_out:02X} ({format_bits(previous_out)})"
+    )
 
     expected_majority = list(model.majority_bytes)
     expected_echoes = []
@@ -201,6 +211,10 @@ async def run_frame(dut, cpus, model, title, switches):
 
     expected_voted = model.apply_frame(outputs, valids, frame_valids)
     assert int(dut.uo_out.value) == expected_voted
+    dut._log.info(
+        f"Chip state after frame:  switches=0x{switches:02X} ({format_bits(switches)}), "
+        f"out=0x{expected_voted:02X} ({format_bits(expected_voted)})"
+    )
     return master_bytes
 
 
@@ -218,9 +232,7 @@ def log_master_frames(cpus, master_bytes):
     for cpu, sent in zip(cpus, master_bytes):
         cocotb.log.info(
             f"Master -> {cpu.name}: next_prn=0x{sent[0]:02X}, "
-            f"switches=0x{sent[1]:02X}, majority=0x{sent[2]:02X} "
-            f"(echo {'ok' if cpu._good_prg else 'bad'}, "
-            f"desired=0x{cpu._desired:02X}, valid=0x{cpu._desired_valid:02X})"
+            f"switches=0x{sent[1]:02X}, majority=0x{sent[2]:02X}"
         )
 
 
