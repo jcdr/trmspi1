@@ -5,7 +5,7 @@ import cocotb
 from cocotb.clock import Clock
 from cocotb.triggers import ClockCycles, Timer
 
-RESET_PRG = 0x2A
+RESET_PRGS = [0x2A, 0x54, 0xA8]
 
 def compute_next(prn):
     fb = ((prn >> 7) & 1) ^ ((prn >> 5) & 1) ^ ((prn >> 4) & 1) ^ ((prn >> 3) & 1)
@@ -53,11 +53,11 @@ def compute_majority_bytes(outputs, valids, frame_valids, voted):
 # SimulatedCPU – now with its own miso_bit index and full encapsulation
 # =================================================================
 class SimulatedCPU:
-    def __init__(self, name, miso_bit_idx):
+    def __init__(self, name, miso_bit_idx, reset_prg):
         self.name = name
         self.miso_bit_idx = miso_bit_idx          # 2, 4 or 6
         self.mosi_bit_idx = miso_bit_idx + 1
-        self.staged_prn = RESET_PRG
+        self.staged_prn = reset_prg
         self._desired = 0x00
         self._desired_valid = 0xFF
         self._good_prg = True
@@ -165,11 +165,11 @@ async def test_project(dut):
 
     # Three CPU instances with their own miso_bit index
     cpus = [
-        SimulatedCPU("CPU0", 2),
-        SimulatedCPU("CPU1", 4),
-        SimulatedCPU("CPU2", 6)
+        SimulatedCPU("CPU0", 2, RESET_PRGS[0]),
+        SimulatedCPU("CPU1", 4, RESET_PRGS[1]),
+        SimulatedCPU("CPU2", 6, RESET_PRGS[2])
     ]
-    current_prg = RESET_PRG
+    current_prgs = list(RESET_PRGS)
     accepted_outputs = [0, 0, 0]
     accepted_valids = [0, 0, 0]
     voted = 0
@@ -183,10 +183,10 @@ async def test_project(dut):
         cpu.frame_set_desired_out(0xA5, valid=True, desired_valid=0xFF)
 
     master_bytes = await perform_transaction(dut, cpus)
-    current_prg = compute_next(current_prg)
+    current_prgs = [compute_next(prg) for prg in current_prgs]
     expected_majority = [0, 0, 0]
     for idx, sent in enumerate(master_bytes):
-        assert sent[0] == current_prg
+        assert sent[0] == current_prgs[idx]
         assert sent[1] == 0xA5
         assert sent[2] == expected_majority[idx]
     accepted_outputs = [0xA5, 0xA5, 0xA5]
@@ -205,7 +205,7 @@ async def test_project(dut):
     cpus[2].frame_set_desired_out(0x05, valid=True, desired_valid=0x05)
 
     master_bytes = await perform_transaction(dut, cpus)
-    current_prg = compute_next(current_prg)
+    current_prgs = [compute_next(prg) for prg in current_prgs]
     expected_majority = compute_majority_bytes(
         accepted_outputs,
         accepted_valids,
@@ -213,7 +213,7 @@ async def test_project(dut):
         voted,
     )
     for idx, sent in enumerate(master_bytes):
-        assert sent[0] == current_prg
+        assert sent[0] == current_prgs[idx]
         assert sent[1] == 0x5A
         assert sent[2] == expected_majority[idx]
     accepted_outputs = [0x0F, 0x03, 0x05]
@@ -232,7 +232,7 @@ async def test_project(dut):
     cpus[2].frame_set_desired_out(0x00, valid=False, desired_valid=0xFF)
 
     master_bytes = await perform_transaction(dut, cpus)
-    current_prg = compute_next(current_prg)
+    current_prgs = [compute_next(prg) for prg in current_prgs]
     expected_majority = compute_majority_bytes(
         accepted_outputs,
         accepted_valids,
@@ -240,7 +240,7 @@ async def test_project(dut):
         voted,
     )
     for idx, sent in enumerate(master_bytes):
-        assert sent[0] == current_prg
+        assert sent[0] == current_prgs[idx]
         assert sent[1] == 0x3C
         assert sent[2] == expected_majority[idx]
     accepted_outputs[0] = 0x08
