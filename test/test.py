@@ -43,6 +43,23 @@ def format_frame_bytes(values, highlights=None):
     )
 
 
+def inject_fault_bit(bits, bit_index):
+    bits[bit_index] ^= 1
+
+
+def bit_index_to_byte_index(bit_index):
+    return bit_index // 8
+
+
+def fault_targets_byte(fault, direction, cpu_index, byte_index):
+    return (
+        fault is not None
+        and fault["direction"] == direction
+        and fault["cpu_index"] == cpu_index
+        and bit_index_to_byte_index(fault["bit_index"]) == byte_index
+    )
+
+
 def vote_resolved_bits(resolved):
     voted = 0
     for bit in range(8):
@@ -83,6 +100,7 @@ class SimulatedCPU:
         self.miso_bit_idx = miso_bit_idx          # 2, 4 or 6
         self.mosi_bit_idx = miso_bit_idx + 1
         self.staged_prn = reset_prg
+        self.observed_switches = 0x00
         self.last_sent_bytes = [reset_prg, 0x00, 0xFF]
         self._desired = 0x00
         self._desired_valid = 0xFF
@@ -117,6 +135,7 @@ class SimulatedCPU:
 
     def frame_accept_master_bytes(self, master_bytes):
         self.staged_prn = master_bytes[0]
+        self.observed_switches = master_bytes[1]
 
 
 async def wait_falling(dut, signal, bit):
@@ -138,12 +157,14 @@ async def wait_raising(dut, signal, bit):
         prev = curr
 
 
-async def perform_transaction(dut, cpu_list, log_frame=True):
+async def perform_transaction(dut, cpu_list, log_frame=True, fault=None):
     """One transfer that works with ANY list of CPU instances"""
     await wait_falling(dut, dut.uio_out, 0)          # CS low
 
     # Get bits from every CPU (this is the clean dereference you asked for)
     bits_list = [cpu.frame_get_bits(log_frame=log_frame) for cpu in cpu_list]
+    if fault is not None and fault["direction"] == "miso":
+        inject_fault_bit(bits_list[fault["cpu_index"]], fault["bit_index"])
     master_bits = [[] for _ in cpu_list]
 
     # First bit immediately (Mode 0)
@@ -156,7 +177,15 @@ async def perform_transaction(dut, cpu_list, log_frame=True):
     await wait_raising(dut, dut.uio_out, 1)
     current = int(dut.uio_out.value)
     for idx, cpu in enumerate(cpu_list):
-        master_bits[idx].append((current >> cpu.mosi_bit_idx) & 1)
+        bit = (current >> cpu.mosi_bit_idx) & 1
+        if (
+            fault is not None
+            and fault["direction"] == "mosi"
+            and fault["cpu_index"] == idx
+            and fault["bit_index"] == 0
+        ):
+            bit ^= 1
+        master_bits[idx].append(bit)
 
     # Remaining 23 bits on falling SCLK
     for i in range(1, 24):
@@ -169,15 +198,24 @@ async def perform_transaction(dut, cpu_list, log_frame=True):
         await wait_raising(dut, dut.uio_out, 1)
         current = int(dut.uio_out.value)
         for idx, cpu in enumerate(cpu_list):
-            master_bits[idx].append((current >> cpu.mosi_bit_idx) & 1)
+            bit = (current >> cpu.mosi_bit_idx) & 1
+            if (
+                fault is not None
+                and fault["direction"] == "mosi"
+                and fault["cpu_index"] == idx
+                and fault["bit_index"] == i
+            ):
+                bit ^= 1
+            master_bits[idx].append(bit)
 
     await wait_raising(dut, dut.uio_out, 0)          # CS high
     await Timer(1, unit="us")
 
+    slave_bytes = [bits_to_bytes(bits) for bits in bits_list]
     master_bytes = [bits_to_bytes(bits) for bits in master_bits]
     for cpu, sent in zip(cpu_list, master_bytes):
         cpu.frame_accept_master_bytes(sent)
-    return master_bytes
+    return master_bytes, slave_bytes
 
 
 async def setup_testbench(dut):
@@ -203,7 +241,16 @@ async def setup_testbench(dut):
     ]
     return cpus, VoterModel()
 
-async def run_frame(dut, cpus, model, title, switches, log_frame=True, return_errors=False):
+async def run_frame(
+    dut,
+    cpus,
+    model,
+    title,
+    switches,
+    log_frame=True,
+    return_errors=False,
+    fault=None,
+):
     if log_frame:
         dut._log.info(title)
     dut.ui_in.value = switches
@@ -217,17 +264,24 @@ async def run_frame(dut, cpus, model, title, switches, log_frame=True, return_er
 
     expected_majority = list(model.majority_bytes)
     expected_echoes = []
+    expected_prns = []
     outputs = []
     valids = []
     frame_valids = []
 
     for cpu in cpus:
+        expected_prns.append(cpu.staged_prn)
         expected_echoes.append(cpu.staged_prn if cpu._good_prg else cpu.staged_prn ^ 0xFF)
         outputs.append(cpu._desired)
         valids.append(cpu._desired_valid)
         frame_valids.append(cpu._good_prg)
 
-    master_bytes = await perform_transaction(dut, cpus, log_frame=log_frame)
+    master_bytes, slave_bytes = await perform_transaction(
+        dut,
+        cpus,
+        log_frame=log_frame,
+        fault=fault,
+    )
     if log_frame:
         log_master_frames(cpus, master_bytes)
 
@@ -239,15 +293,23 @@ async def run_frame(dut, cpus, model, title, switches, log_frame=True, return_er
                 f"expected 0x{expected_echoes[idx]:02X}"
             )
         if sent[1] != switches:
-            errors.append(
-                f"{cpus[idx].name} switches=0x{sent[1]:02X} expected 0x{switches:02X}"
-            )
+            if not fault_targets_byte(fault, "mosi", idx, 1):
+                errors.append(
+                    f"{cpus[idx].name} switches=0x{sent[1]:02X} expected 0x{switches:02X}"
+                )
         if sent[2] != expected_majority[idx]:
-            errors.append(
-                f"{cpus[idx].name} majority=0x{sent[2]:02X} expected 0x{expected_majority[idx]:02X}"
-            )
+            if not fault_targets_byte(fault, "mosi", idx, 2):
+                errors.append(
+                    f"{cpus[idx].name} majority=0x{sent[2]:02X} expected 0x{expected_majority[idx]:02X}"
+                )
 
-    expected_voted = model.apply_frame(outputs, valids, frame_valids)
+    actual_outputs = [sent[1] for sent in slave_bytes]
+    actual_valids = [sent[2] for sent in slave_bytes]
+    actual_frame_valids = [
+        sent[0] == expected_prn
+        for sent, expected_prn in zip(slave_bytes, expected_prns)
+    ]
+    expected_voted = model.apply_frame(actual_outputs, actual_valids, actual_frame_valids)
     actual_voted = int(dut.uo_out.value)
     if actual_voted != expected_voted:
         errors.append(f"out=0x{actual_voted:02X} expected 0x{expected_voted:02X}")
@@ -257,7 +319,12 @@ async def run_frame(dut, cpus, model, title, switches, log_frame=True, return_er
             f"out=0x{expected_voted:02X} ({format_bits(expected_voted)})"
         )
     if return_errors:
-        return master_bytes, errors, actual_voted
+        return {
+            "master_bytes": master_bytes,
+            "slave_bytes": slave_bytes,
+            "errors": errors,
+            "actual_voted": actual_voted,
+        }
     assert not errors, "; ".join(errors)
     return master_bytes
 
