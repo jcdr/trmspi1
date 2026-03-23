@@ -18,9 +18,9 @@
 // In other words: Data is clocked out on the falling edge and clocked in on the rising edge, with SCLK starting low.
 // This matches the default SPI mode on the RP2350 microcontroller (e.g., in the Raspberry Pi Pico 2 SDK and hardware).
 // Frame size: 24 bits
-// Master to Slave: next_prn[7:0], agreement_byte[7:0] ({7'b0, agreement_bit}), switches[7:0]
+// Master to Slave: next_prn[7:0], switches[7:0], majority_valid[7:0]
 // Slave to Master: echoed_prn[7:0], desired_out[7:0], desired_valid[7:0]
-// Agreement bit: 1 if CPU output matches voted (part of majority), 0 otherwise
+// Majority valid bit: 1 if that voted output bit currently has a valid 2-of-3 majority, 0 otherwise
 // PRNG: 8-bit LFSR, polynomial x^8 + x^6 + x^5 + x^4 + 1, initial 8'h2A shared with CPUs
 // Validation: Compute next_prn from current_prn, send it, and compare the received echoed_prn
 // against the previous current_prn. Invalid frames don't update pX_out.
@@ -109,10 +109,7 @@ module tt_um_tmr_voter (
     reg [7:0] p0_out, p1_out, p2_out;
     reg [7:0] p0_valid, p1_valid, p2_valid;
     reg [7:0] voted;
-
-    wire p0_agree = (p0_out == voted);
-    wire p1_agree = (p1_out == voted);
-    wire p2_agree = (p2_out == voted);
+    reg [7:0] voted_valid;
 
     reg [7:0] current_prn;  // Previous PRN expected back from CPUs this frame
     wire [7:0] next_prn;    // Next PRN sent to CPUs this frame
@@ -132,6 +129,7 @@ module tt_um_tmr_voter (
             voted <= 0;
             p0_out <= 0; p1_out <= 0; p2_out <= 0;
             p0_valid <= 0; p1_valid <= 0; p2_valid <= 0;
+            voted_valid <= 0;
             state <= 0;
             bit_cnt <= 0;
             // MINIMAL FIX: removed phase/bit_pos init
@@ -188,13 +186,13 @@ module tt_um_tmr_voter (
                     end else begin  // Falling edge: shift/load
                         // Load the next TX byte after the previous 8 bits have completed
                         if (bit_cnt == 5'd7) begin
-                            tx_shift0 <= {7'b0000000, p0_agree};
-                            tx_shift1 <= {7'b0000000, p1_agree};
-                            tx_shift2 <= {7'b0000000, p2_agree};
-                        end else if (bit_cnt == 5'd15) begin
                             tx_shift0 <= switches;
                             tx_shift1 <= switches;
                             tx_shift2 <= switches;
+                        end else if (bit_cnt == 5'd15) begin
+                            tx_shift0 <= voted_valid;
+                            tx_shift1 <= voted_valid;
+                            tx_shift2 <= voted_valid;
                         end else begin
                             tx_shift0 <= {tx_shift0[6:0], 1'b0};
                             tx_shift1 <= {tx_shift1[6:0], 1'b0};
@@ -212,6 +210,7 @@ module tt_um_tmr_voter (
                             p1_valid <= new_p1_valid;
                             p2_valid <= new_p2_valid;
                             voted <= new_voted;
+                            voted_valid <= new_voted_valid;
                             // Advance PRNG for next cycle
                             current_prn <= next_prn;
                         end

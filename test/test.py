@@ -24,6 +24,7 @@ def bits_to_bytes(bits):
 
 def compute_majority(outputs, valids, previous):
     voted = previous
+    voted_valid = 0
 
     for bit in range(8):
         inputs = [
@@ -33,10 +34,12 @@ def compute_majority(outputs, valids, previous):
         ]
         if inputs.count(1) >= 2:
             voted |= 1 << bit
+            voted_valid |= 1 << bit
         elif inputs.count(0) >= 2:
             voted &= ~(1 << bit)
+            voted_valid |= 1 << bit
 
-    return voted
+    return voted, voted_valid
 
 
 # =================================================================
@@ -163,6 +166,7 @@ async def test_project(dut):
     accepted_outputs = [0, 0, 0]
     accepted_valids = [0, 0, 0]
     voted = 0
+    voted_valid = 0
 
     # =================================================================
     # Test 1: All valid → voted = 0xA5
@@ -176,9 +180,11 @@ async def test_project(dut):
     current_prg = compute_next(current_prg)
     for sent in master_bytes:
         assert sent[0] == current_prg
+        assert sent[1] == 0xA5
+        assert sent[2] == voted_valid
     accepted_outputs = [0xA5, 0xA5, 0xA5]
     accepted_valids = [0xFF, 0xFF, 0xFF]
-    voted = compute_majority(accepted_outputs, accepted_valids, voted)
+    voted, voted_valid = compute_majority(accepted_outputs, accepted_valids, voted)
     assert int(dut.uo_out.value) == 0xA5
     dut._log.info("Test 1 PASSED")
 
@@ -195,9 +201,11 @@ async def test_project(dut):
     current_prg = compute_next(current_prg)
     for sent in master_bytes:
         assert sent[0] == current_prg
+        assert sent[1] == 0x5A
+        assert sent[2] == voted_valid
     accepted_outputs = [0x0F, 0x03, 0x05]
     accepted_valids = [0x0F, 0x03, 0x05]
-    voted = compute_majority(accepted_outputs, accepted_valids, voted)
+    voted, voted_valid = compute_majority(accepted_outputs, accepted_valids, voted)
     assert int(dut.uo_out.value) == 0xA7
     dut._log.info("Test 2 PASSED")
 
@@ -214,9 +222,11 @@ async def test_project(dut):
     current_prg = compute_next(current_prg)
     for sent in master_bytes:
         assert sent[0] == current_prg
+        assert sent[1] == 0x3C
+        assert sent[2] == voted_valid
     accepted_outputs[0] = 0x08
     accepted_valids[0] = 0x08
-    voted = compute_majority(accepted_outputs, accepted_valids, voted)
+    voted, voted_valid = compute_majority(accepted_outputs, accepted_valids, voted)
     assert int(dut.uo_out.value) == 0xA7
     dut._log.info("Test 3 PASSED (voted correctly unchanged)")
 
