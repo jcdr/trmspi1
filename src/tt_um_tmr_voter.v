@@ -19,7 +19,7 @@
 // This matches the default SPI mode on the RP2350 microcontroller (e.g., in the Raspberry Pi Pico 2 SDK and hardware).
 // Frame size: 24 bits
 // Master to Slave: next_prn[7:0], agreement_byte[7:0] ({7'b0, agreement_bit}), switches[7:0]
-// Slave to Master: echoed_prn[7:0], desired_out[7:0], unused[7:0]
+// Slave to Master: echoed_prn[7:0], desired_out[7:0], desired_valid[7:0]
 // Agreement bit: 1 if CPU output matches voted (part of majority), 0 otherwise
 // PRNG: 8-bit LFSR, polynomial x^8 + x^6 + x^5 + x^4 + 1, initial 8'h2A shared with CPUs
 // Validation: Compute next_prn from current_prn, send it, and compare the received echoed_prn
@@ -85,6 +85,7 @@ module tt_um_tmr_voter (
 
     reg [7:0] received_next0, received_next1, received_next2;
     reg [7:0] desired0, desired1, desired2;
+    reg [7:0] desired_valid0, desired_valid1, desired_valid2;
 
     // NEW: Combinational wires for updates (fixes accumulation and update timing)
     wire valid0 = (received_next0 == current_prn);
@@ -93,10 +94,20 @@ module tt_um_tmr_voter (
     wire [7:0] new_p0_out = valid0 ? desired0 : p0_out;
     wire [7:0] new_p1_out = valid1 ? desired1 : p1_out;
     wire [7:0] new_p2_out = valid2 ? desired2 : p2_out;
-    wire [2:0] new_valid_count = {2'b0, valid0} + {2'b0, valid1} + {2'b0, valid2};
-    wire [7:0] new_voted = (new_p0_out & new_p1_out) | (new_p0_out & new_p2_out) | (new_p1_out & new_p2_out);
+    wire [7:0] new_p0_valid = valid0 ? desired_valid0 : p0_valid;
+    wire [7:0] new_p1_valid = valid1 ? desired_valid1 : p1_valid;
+    wire [7:0] new_p2_valid = valid2 ? desired_valid2 : p2_valid;
+    wire [7:0] voted_one = (new_p0_valid & new_p1_valid & new_p0_out & new_p1_out) |
+                           (new_p0_valid & new_p2_valid & new_p0_out & new_p2_out) |
+                           (new_p1_valid & new_p2_valid & new_p1_out & new_p2_out);
+    wire [7:0] voted_zero = (new_p0_valid & new_p1_valid & ~new_p0_out & ~new_p1_out) |
+                            (new_p0_valid & new_p2_valid & ~new_p0_out & ~new_p2_out) |
+                            (new_p1_valid & new_p2_valid & ~new_p1_out & ~new_p2_out);
+    wire [7:0] new_voted = (voted & ~(voted_one | voted_zero)) | voted_one;
+    wire [7:0] new_voted_valid = voted_one | voted_zero;
 
     reg [7:0] p0_out, p1_out, p2_out;
+    reg [7:0] p0_valid, p1_valid, p2_valid;
     reg [7:0] voted;
 
     wire p0_agree = (p0_out == voted);
@@ -120,6 +131,7 @@ module tt_um_tmr_voter (
             timer <= 13'd4096;  // start first transaction after ~0.5 ms (half of the 1 kHz cycle)
             voted <= 0;
             p0_out <= 0; p1_out <= 0; p2_out <= 0;
+            p0_valid <= 0; p1_valid <= 0; p2_valid <= 0;
             state <= 0;
             bit_cnt <= 0;
             // MINIMAL FIX: removed phase/bit_pos init
@@ -127,6 +139,7 @@ module tt_um_tmr_voter (
             rx_shift0 <= 0; rx_shift1 <= 0; rx_shift2 <= 0;
             received_next0 <= 0; received_next1 <= 0; received_next2 <= 0;
             desired0 <= 0; desired1 <= 0; desired2 <= 0;
+            desired_valid0 <= 0; desired_valid1 <= 0; desired_valid2 <= 0;
             sclk_out <= 0;
             cs_n_out <= 1;
         end else begin
@@ -165,7 +178,11 @@ module tt_um_tmr_voter (
                                     desired1 <= (rx_shift1 << 1) | {7'b0, miso1};
                                     desired2 <= (rx_shift2 << 1) | {7'b0, miso2};
                                 end
-                                // 2: ignore unused
+                                2: begin
+                                    desired_valid0 <= (rx_shift0 << 1) | {7'b0, miso0};
+                                    desired_valid1 <= (rx_shift1 << 1) | {7'b0, miso1};
+                                    desired_valid2 <= (rx_shift2 << 1) | {7'b0, miso2};
+                                end
                             endcase
                         end
                     end else begin  // Falling edge: shift/load
@@ -191,9 +208,10 @@ module tt_um_tmr_voter (
                             p0_out <= new_p0_out;
                             p1_out <= new_p1_out;
                             p2_out <= new_p2_out;
-                            if (new_valid_count >= 2) begin
-                                voted <= new_voted;
-                            end  // else voted remains untouched (safe, as per previous state)
+                            p0_valid <= new_p0_valid;
+                            p1_valid <= new_p1_valid;
+                            p2_valid <= new_p2_valid;
+                            voted <= new_voted;
                             // Advance PRNG for next cycle
                             current_prn <= next_prn;
                         end
