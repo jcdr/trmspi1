@@ -24,7 +24,6 @@ def bits_to_bytes(bits):
 
 def compute_majority(outputs, valids, previous):
     voted = previous
-    voted_valid = 0
 
     for bit in range(8):
         inputs = [
@@ -34,12 +33,20 @@ def compute_majority(outputs, valids, previous):
         ]
         if inputs.count(1) >= 2:
             voted |= 1 << bit
-            voted_valid |= 1 << bit
         elif inputs.count(0) >= 2:
             voted &= ~(1 << bit)
-            voted_valid |= 1 << bit
 
-    return voted, voted_valid
+    return voted
+
+
+def compute_majority_bytes(outputs, valids, frame_valids, voted):
+    majority_bytes = []
+    for output, valid, frame_valid in zip(outputs, valids, frame_valids):
+        if frame_valid:
+            majority_bytes.append(valid & ~(output ^ voted))
+        else:
+            majority_bytes.append(0)
+    return majority_bytes
 
 
 # =================================================================
@@ -166,7 +173,6 @@ async def test_project(dut):
     accepted_outputs = [0, 0, 0]
     accepted_valids = [0, 0, 0]
     voted = 0
-    voted_valid = 0
 
     # =================================================================
     # Test 1: All valid → voted = 0xA5
@@ -178,13 +184,14 @@ async def test_project(dut):
 
     master_bytes = await perform_transaction(dut, cpus)
     current_prg = compute_next(current_prg)
-    for sent in master_bytes:
+    expected_majority = [0, 0, 0]
+    for idx, sent in enumerate(master_bytes):
         assert sent[0] == current_prg
         assert sent[1] == 0xA5
-        assert sent[2] == voted_valid
+        assert sent[2] == expected_majority[idx]
     accepted_outputs = [0xA5, 0xA5, 0xA5]
     accepted_valids = [0xFF, 0xFF, 0xFF]
-    voted, voted_valid = compute_majority(accepted_outputs, accepted_valids, voted)
+    voted = compute_majority(accepted_outputs, accepted_valids, voted)
     assert int(dut.uo_out.value) == 0xA5
     dut._log.info("Test 1 PASSED")
 
@@ -199,13 +206,19 @@ async def test_project(dut):
 
     master_bytes = await perform_transaction(dut, cpus)
     current_prg = compute_next(current_prg)
-    for sent in master_bytes:
+    expected_majority = compute_majority_bytes(
+        accepted_outputs,
+        accepted_valids,
+        [True, True, True],
+        voted,
+    )
+    for idx, sent in enumerate(master_bytes):
         assert sent[0] == current_prg
         assert sent[1] == 0x5A
-        assert sent[2] == voted_valid
+        assert sent[2] == expected_majority[idx]
     accepted_outputs = [0x0F, 0x03, 0x05]
     accepted_valids = [0x0F, 0x03, 0x05]
-    voted, voted_valid = compute_majority(accepted_outputs, accepted_valids, voted)
+    voted = compute_majority(accepted_outputs, accepted_valids, voted)
     assert int(dut.uo_out.value) == 0xA7
     dut._log.info("Test 2 PASSED")
 
@@ -220,13 +233,19 @@ async def test_project(dut):
 
     master_bytes = await perform_transaction(dut, cpus)
     current_prg = compute_next(current_prg)
-    for sent in master_bytes:
+    expected_majority = compute_majority_bytes(
+        accepted_outputs,
+        accepted_valids,
+        [True, True, True],
+        voted,
+    )
+    for idx, sent in enumerate(master_bytes):
         assert sent[0] == current_prg
         assert sent[1] == 0x3C
-        assert sent[2] == voted_valid
+        assert sent[2] == expected_majority[idx]
     accepted_outputs[0] = 0x08
     accepted_valids[0] = 0x08
-    voted, voted_valid = compute_majority(accepted_outputs, accepted_valids, voted)
+    voted = compute_majority(accepted_outputs, accepted_valids, voted)
     assert int(dut.uo_out.value) == 0xA7
     dut._log.info("Test 3 PASSED (voted correctly unchanged)")
 
