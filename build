@@ -1,10 +1,29 @@
 #!/bin/bash
 
+test_only=0
+
+case "${1:-}" in
+    -t|--test)
+        test_only=1
+        ;;
+    "")
+        ;;
+    *)
+        echo "Usage: $0 [-t|--test]" >&2
+        exit 1
+        ;;
+esac
+
 source ~/ttsetup/venv/bin/activate
 
 export PDK_ROOT=~/IHP-Open-PDK
 export PDK=ihp-sg13g2
 export LIBRELANE_TAG=3.0.0rc1
+
+if [ "$test_only" -eq 1 ]; then
+    time (cd test/ && make -B)
+    exit $?
+fi
 
 time (\
     ./tt/tt_tool.py --harden --ihp &&\
