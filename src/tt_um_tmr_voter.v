@@ -62,14 +62,16 @@ module tt_um_tmr_spi_slice #(
     reg [7:0] desired_valid_r;
     reg [7:0] current_prn;
     reg [7:0] previous_voted_r;
+    reg [7:0] majority_r;
 
     wire prng_fb = current_prn[7] ^ current_prn[5] ^ current_prn[4] ^ current_prn[3];
     wire [7:0] next_prn = {current_prn[6:0], prng_fb};
     wire frame_valid = (received_prn == current_prn);
-    wire [7:0] majority = frame_valid & desired_valid_r & ~(desired_r ^ voted);
+    wire [7:0] valid_mask = {8{frame_valid}} & desired_valid_r;
+    wire [7:0] majority_next = valid_mask & ~(desired_r ^ voted);
 
     assign mosi = tx_shift[7];
-    assign resolved = (frame_valid & desired_valid_r) ? desired_r : previous_voted_r;
+    assign resolved = (desired_r & valid_mask) | (previous_voted_r & ~valid_mask);
 
     always @(posedge clk or negedge rst_n) begin
         if (!rst_n) begin
@@ -80,6 +82,7 @@ module tt_um_tmr_spi_slice #(
             desired_valid_r <= 0;
             current_prn <= INITIAL_PRN;
             previous_voted_r <= 0;
+            majority_r <= 0;
         end else begin
             if (start_frame) begin
                 tx_shift <= next_prn;
@@ -101,13 +104,14 @@ module tt_um_tmr_spi_slice #(
                 if (bit_cnt == 5'd7) begin
                     tx_shift <= switches;
                 end else if (bit_cnt == 5'd15) begin
-                    tx_shift <= majority;
+                    tx_shift <= majority_r;
                 end else begin
                     tx_shift <= {tx_shift[6:0], 1'b0};
                 end
 
                 if (bit_cnt == 5'd23) begin
                     previous_voted_r <= voted;
+                    majority_r <= majority_next;
                     current_prn <= next_prn;
                 end
             end
