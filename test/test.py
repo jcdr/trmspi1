@@ -214,8 +214,7 @@ def configure_cpu_frame(cpus, outputs, frame_valids, valids):
 
 
 async def reach_masked_vote(dut, cpus, model):
-    configure_all_cpus(cpus, 0xA5)
-    await run_frame(dut, cpus, model, "=== Prime vote: all valid -> 0xA5 ===", 0xA5)
+    await prime_vote(dut, cpus, model, 0xA5)
 
     configure_cpu_frame(
         cpus,
@@ -227,12 +226,17 @@ async def reach_masked_vote(dut, cpus, model):
     assert int(dut.uo_out.value) == 0xA7
 
 
+async def prime_vote(dut, cpus, model, voted):
+    configure_all_cpus(cpus, voted)
+    await run_frame(dut, cpus, model, f"=== Prime vote: all valid -> 0x{voted:02X} ===", voted)
+    assert int(dut.uo_out.value) == voted
+
+
 @cocotb.test()
 async def test_all_valid_vote(dut):
     cpus, model = await setup_testbench(dut)
 
-    configure_all_cpus(cpus, 0xA5)
-    await run_frame(dut, cpus, model, "=== Test 1: All valid -> voted = 0xA5 ===", 0xA5)
+    await prime_vote(dut, cpus, model, 0xA5)
     assert int(dut.uo_out.value) == 0xA5
     dut._log.info("Test 1 PASSED")
 
@@ -241,8 +245,7 @@ async def test_all_valid_vote(dut):
 async def test_per_bit_valid_masks(dut):
     cpus, model = await setup_testbench(dut)
 
-    configure_all_cpus(cpus, 0xA5)
-    await run_frame(dut, cpus, model, "=== Prime vote: all valid -> 0xA5 ===", 0xA5)
+    await prime_vote(dut, cpus, model, 0xA5)
 
     configure_cpu_frame(
         cpus,
@@ -270,3 +273,103 @@ async def test_one_valid_frame_keeps_vote(dut):
     await run_frame(dut, cpus, model, "=== Test 3: Only one valid -> voted stays unchanged ===", 0x3C)
     assert int(dut.uo_out.value) == 0xA7
     dut._log.info("Test 3 PASSED (voted correctly unchanged)")
+
+
+@cocotb.test()
+async def test_majority_bytes_are_sent_one_frame_late(dut):
+    cpus, model = await setup_testbench(dut)
+
+    await prime_vote(dut, cpus, model, 0xA5)
+
+    configure_all_cpus(cpus, 0x3C)
+    master_bytes = await run_frame(
+        dut,
+        cpus,
+        model,
+        "=== Test 4: Majority bytes report previous frame membership ===",
+        0x3C,
+    )
+    for sent in master_bytes:
+        assert sent[2] == 0xFF
+    assert int(dut.uo_out.value) == 0x3C
+    dut._log.info("Test 4 PASSED")
+
+
+@cocotb.test()
+async def test_bad_prg_clears_that_cpu_majority_byte(dut):
+    cpus, model = await setup_testbench(dut)
+
+    await prime_vote(dut, cpus, model, 0xA5)
+
+    configure_cpu_frame(
+        cpus,
+        [0xA5, 0xA5, 0xA5],
+        [True, False, True],
+        [0xFF, 0xFF, 0xFF],
+    )
+    await run_frame(
+        dut,
+        cpus,
+        model,
+        "=== Test 5: Bad PRG clears one CPU majority byte ===",
+        0xA5,
+    )
+
+    configure_all_cpus(cpus, 0x3C)
+    master_bytes = await run_frame(
+        dut,
+        cpus,
+        model,
+        "=== Test 5 follow-up: next frame sends the cleared majority byte ===",
+        0x3C,
+    )
+    assert master_bytes[0][2] == 0xFF
+    assert master_bytes[1][2] == 0x00
+    assert master_bytes[2][2] == 0xFF
+    dut._log.info("Test 5 PASSED")
+
+
+@cocotb.test()
+async def test_invalid_bits_fall_back_to_previous_vote(dut):
+    cpus, model = await setup_testbench(dut)
+
+    await prime_vote(dut, cpus, model, 0xF0)
+
+    configure_cpu_frame(
+        cpus,
+        [0x0F, 0x0F, 0x00],
+        [True, True, True],
+        [0x0F, 0x0F, 0x00],
+    )
+    await run_frame(
+        dut,
+        cpus,
+        model,
+        "=== Test 6: Invalid bits fall back to the previous vote ===",
+        0x00,
+    )
+    assert int(dut.uo_out.value) == 0xFF
+    dut._log.info("Test 6 PASSED")
+
+
+@cocotb.test()
+async def test_valid_zero_bits_can_clear_previous_ones(dut):
+    cpus, model = await setup_testbench(dut)
+
+    await prime_vote(dut, cpus, model, 0xFF)
+
+    configure_cpu_frame(
+        cpus,
+        [0x00, 0x00, 0xFF],
+        [True, True, True],
+        [0xF0, 0xF0, 0x00],
+    )
+    await run_frame(
+        dut,
+        cpus,
+        model,
+        "=== Test 7: Valid zero bits clear previous ones ===",
+        0x00,
+    )
+    assert int(dut.uo_out.value) == 0x0F
+    dut._log.info("Test 7 PASSED")
