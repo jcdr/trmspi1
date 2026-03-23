@@ -9,6 +9,8 @@ from cocotb.triggers import ClockCycles, Timer
 
 RESET_PRGS = [0x2A, 0x54, 0xA8]
 STRESS_TEST_SEED = 0x5EED1234
+ANSI_YELLOW = "\033[33m"
+ANSI_RESET = "\033[0m"
 
 
 def format_bits(value):
@@ -23,6 +25,22 @@ def bits_to_bytes(bits):
             value = (value << 1) | bit
         data.append(value)
     return data
+
+
+def format_byte(value, highlight=False):
+    text = f"{value:02X}"
+    if highlight:
+        return f"{ANSI_YELLOW}{text}{ANSI_RESET}"
+    return text
+
+
+def format_frame_bytes(values, highlights=None):
+    if highlights is None:
+        highlights = [False] * len(values)
+    return "/".join(
+        format_byte(value, highlight=highlight)
+        for value, highlight in zip(values, highlights)
+    )
 
 
 def vote_resolved_bits(resolved):
@@ -185,7 +203,7 @@ async def setup_testbench(dut):
     ]
     return cpus, VoterModel()
 
-async def run_frame(dut, cpus, model, title, switches, log_frame=True):
+async def run_frame(dut, cpus, model, title, switches, log_frame=True, return_errors=False):
     if log_frame:
         dut._log.info(title)
     dut.ui_in.value = switches
@@ -213,19 +231,60 @@ async def run_frame(dut, cpus, model, title, switches, log_frame=True):
     if log_frame:
         log_master_frames(cpus, master_bytes)
 
+    errors = []
     for idx, sent in enumerate(master_bytes):
-        assert cpus[idx].last_sent_bytes[0] == expected_echoes[idx]
-        assert sent[1] == switches
-        assert sent[2] == expected_majority[idx]
+        if cpus[idx].last_sent_bytes[0] != expected_echoes[idx]:
+            errors.append(
+                f"{cpus[idx].name} echoed_prn=0x{cpus[idx].last_sent_bytes[0]:02X} "
+                f"expected 0x{expected_echoes[idx]:02X}"
+            )
+        if sent[1] != switches:
+            errors.append(
+                f"{cpus[idx].name} switches=0x{sent[1]:02X} expected 0x{switches:02X}"
+            )
+        if sent[2] != expected_majority[idx]:
+            errors.append(
+                f"{cpus[idx].name} majority=0x{sent[2]:02X} expected 0x{expected_majority[idx]:02X}"
+            )
 
     expected_voted = model.apply_frame(outputs, valids, frame_valids)
-    assert int(dut.uo_out.value) == expected_voted
+    actual_voted = int(dut.uo_out.value)
+    if actual_voted != expected_voted:
+        errors.append(f"out=0x{actual_voted:02X} expected 0x{expected_voted:02X}")
     if log_frame:
         dut._log.info(
             f"Chip state after frame:  switches=0x{switches:02X} ({format_bits(switches)}), "
             f"out=0x{expected_voted:02X} ({format_bits(expected_voted)})"
         )
+    if return_errors:
+        return master_bytes, errors, actual_voted
+    assert not errors, "; ".join(errors)
     return master_bytes
+
+
+def log_random_frame_summary(
+    dut,
+    frame_number,
+    switches,
+    previous_out,
+    actual_out,
+    cpus,
+    master_bytes,
+    errors,
+):
+    parts = [
+        f"F{frame_number:03d}",
+        f"in={switches:02X}",
+        f"out={previous_out:02X}->{actual_out:02X}",
+    ]
+    for cpu, master in zip(cpus, master_bytes):
+        slave = cpu.last_sent_bytes
+        parts.append(
+            f"{cpu.name}:M[{format_frame_bytes(master)}]"
+            f"/S[{format_frame_bytes(slave, [not cpu._good_prg, False, False])}]"
+        )
+    parts.append("FAIL" if errors else "OK")
+    dut._log.info(" | ".join(parts))
 
 
 def configure_all_cpus(cpus, desired_out, valid=True, desired_valid=0xFF):
@@ -618,25 +677,26 @@ async def test_random_traffic_keeps_running_without_reset(dut):
 
     for frame in range(256):
         switches, outputs, valids, frame_valids = configure_random_frame(cpus, rng)
-        await run_frame(
+        previous_out = int(dut.uo_out.value)
+        master_bytes, errors, actual_out = await run_frame(
             dut,
             cpus,
             model,
             "",
             switches,
             log_frame=False,
+            return_errors=True,
         )
-
-        if frame % 32 == 0:
-            dut._log.info(
-                f"Stress start: frame {frame + 1:03d}/256, "
-                f"switches=0x{switches:02X}, good_prgs={sum(frame_valids)}/3, "
-                f"out=0x{int(dut.uo_out.value):02X}"
-            )
-        elif frame % 32 == 31:
-            dut._log.info(
-                f"Stress progress: frame {frame + 1:03d}/256, "
-                f"out=0x{int(dut.uo_out.value):02X}"
-            )
+        log_random_frame_summary(
+            dut,
+            frame + 1,
+            switches,
+            previous_out,
+            actual_out,
+            cpus,
+            master_bytes,
+            errors,
+        )
+        assert not errors, "; ".join(errors)
 
     dut._log.info("Test 14 PASSED")
