@@ -22,6 +22,7 @@
 // Slave to Master: echoed_prn[7:0], desired_out[7:0], desired_valid[7:0]
 // Majority bit: 1 if that CPU sent a valid bit matching the voted output, 0 otherwise
 // PRNG: 8-bit LFSR, polynomial x^8 + x^6 + x^5 + x^4 + 1, one instance per SPI slice
+// Reset seeds: SPI0=8'h2A, SPI1=8'h54, SPI2=8'hA8
 // Validation: Each slice computes next_prn from its own current_prn, sends it, and compares the
 // received echoed_prn against its previous current_prn. Invalid frames don't update that slice.
 // Cycle: 1kHz voting (timer 13-bit, ~1ms at 8.192MHz clk)
@@ -207,7 +208,9 @@ module tt_um_tmr_voter (
     wire [7:0] majority2;
     wire [7:0] new_voted;
 
-    tt_um_tmr_spi_slice spi0 (
+    tt_um_tmr_spi_slice #(
+        .INITIAL_PRN(8'h2A)
+    ) spi0 (
         .clk(clk),
         .rst_n(rst_n),
         .start_frame(start_frame),
@@ -225,7 +228,9 @@ module tt_um_tmr_voter (
         .frame_valid(frame_valid0)
     );
 
-    tt_um_tmr_spi_slice spi1 (
+    tt_um_tmr_spi_slice #(
+        .INITIAL_PRN(8'h54)
+    ) spi1 (
         .clk(clk),
         .rst_n(rst_n),
         .start_frame(start_frame),
@@ -243,7 +248,9 @@ module tt_um_tmr_voter (
         .frame_valid(frame_valid1)
     );
 
-    tt_um_tmr_spi_slice spi2 (
+    tt_um_tmr_spi_slice #(
+        .INITIAL_PRN(8'hA8)
+    ) spi2 (
         .clk(clk),
         .rst_n(rst_n),
         .start_frame(start_frame),
