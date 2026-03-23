@@ -52,8 +52,7 @@ module tt_um_tmr_spi_slice #(
     input  wire [7:0] switches,
     input  wire [7:0] voted,
     output wire       mosi,
-    output wire [7:0] resolved,
-    output wire [7:0] majority
+    output wire [7:0] resolved
 );
 
     reg [7:0] tx_shift;
@@ -67,10 +66,10 @@ module tt_um_tmr_spi_slice #(
     wire prng_fb = current_prn[7] ^ current_prn[5] ^ current_prn[4] ^ current_prn[3];
     wire [7:0] next_prn = {current_prn[6:0], prng_fb};
     wire frame_valid = (received_prn == current_prn);
+    wire [7:0] majority = frame_valid & desired_valid_r & ~(desired_r ^ voted);
 
     assign mosi = tx_shift[7];
     assign resolved = (frame_valid & desired_valid_r) ? desired_r : previous_voted_r;
-    assign majority = frame_valid & desired_valid_r & ~(desired_r ^ voted);
 
     always @(posedge clk or negedge rst_n) begin
         if (!rst_n) begin
@@ -173,9 +172,6 @@ module tt_um_tmr_voter (
     wire [7:0] resolved0;
     wire [7:0] resolved1;
     wire [7:0] resolved2;
-    wire [7:0] majority0;
-    wire [7:0] majority1;
-    wire [7:0] majority2;
     wire [7:0] new_voted;
 
     tt_um_tmr_spi_slice #(
@@ -191,8 +187,7 @@ module tt_um_tmr_voter (
         .switches(switches),
         .voted(new_voted),
         .mosi(mosi0),
-        .resolved(resolved0),
-        .majority(majority0)
+        .resolved(resolved0)
     );
 
     tt_um_tmr_spi_slice #(
@@ -208,8 +203,7 @@ module tt_um_tmr_voter (
         .switches(switches),
         .voted(new_voted),
         .mosi(mosi1),
-        .resolved(resolved1),
-        .majority(majority1)
+        .resolved(resolved1)
     );
 
     tt_um_tmr_spi_slice #(
@@ -225,8 +219,7 @@ module tt_um_tmr_voter (
         .switches(switches),
         .voted(new_voted),
         .mosi(mosi2),
-        .resolved(resolved2),
-        .majority(majority2)
+        .resolved(resolved2)
     );
 
     genvar i;
