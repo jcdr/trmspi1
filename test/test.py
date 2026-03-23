@@ -7,10 +7,6 @@ from cocotb.triggers import ClockCycles, Timer
 
 RESET_PRGS = [0x2A, 0x54, 0xA8]
 
-def compute_next(prn):
-    fb = ((prn >> 7) & 1) ^ ((prn >> 5) & 1) ^ ((prn >> 4) & 1) ^ ((prn >> 3) & 1)
-    return ((prn & 0x7F) << 1) | fb
-
 
 def bits_to_bytes(bits):
     data = []
@@ -22,31 +18,35 @@ def bits_to_bytes(bits):
     return data
 
 
-def compute_majority(outputs, valids, previous):
-    voted = previous
-
+def vote_resolved_bits(resolved):
+    voted = 0
     for bit in range(8):
-        inputs = [
-            (output >> bit) & 1
-            for output, valid in zip(outputs, valids)
-            if (valid >> bit) & 1
-        ]
+        inputs = [(value >> bit) & 1 for value in resolved]
         if inputs.count(1) >= 2:
             voted |= 1 << bit
-        elif inputs.count(0) >= 2:
-            voted &= ~(1 << bit)
-
     return voted
 
 
-def compute_majority_bytes(outputs, valids, frame_valids, voted):
-    majority_bytes = []
-    for output, valid, frame_valid in zip(outputs, valids, frame_valids):
-        if frame_valid:
-            majority_bytes.append(valid & ~(output ^ voted))
-        else:
-            majority_bytes.append(0)
-    return majority_bytes
+class VoterModel:
+    def __init__(self):
+        self.voted = 0
+        self.majority_bytes = [0, 0, 0]
+
+    def apply_frame(self, outputs, valids, frame_valids):
+        valid_masks = [
+            (valid if frame_valid else 0)
+            for valid, frame_valid in zip(valids, frame_valids)
+        ]
+        resolved = [
+            (output & valid_mask) | (self.voted & (~valid_mask & 0xFF))
+            for output, valid_mask in zip(outputs, valid_masks)
+        ]
+        self.voted = vote_resolved_bits(resolved)
+        self.majority_bytes = [
+            valid_mask & ~(output ^ self.voted) & 0xFF
+            for output, valid_mask in zip(outputs, valid_masks)
+        ]
+        return self.voted
 
 
 # =================================================================
@@ -58,6 +58,7 @@ class SimulatedCPU:
         self.miso_bit_idx = miso_bit_idx          # 2, 4 or 6
         self.mosi_bit_idx = miso_bit_idx + 1
         self.staged_prn = reset_prg
+        self.last_sent_bytes = [reset_prg, 0x00, 0xFF]
         self._desired = 0x00
         self._desired_valid = 0xFF
         self._good_prg = True
@@ -71,13 +72,17 @@ class SimulatedCPU:
     def frame_get_bits(self):
         """Return 24-bit MISO stream + log (called by perform_transaction)"""
         if self._good_prg:
-            send_bytes = [self.staged_prn, self._desired, self._desired_valid]
+            self.last_sent_bytes = [self.staged_prn, self._desired, self._desired_valid]
         else:
-            send_bytes = [self.staged_prn ^ 0xFF, self._desired, self._desired_valid]
+            self.last_sent_bytes = [
+                self.staged_prn ^ 0xFF,
+                self._desired,
+                self._desired_valid,
+            ]
 
-        bits = [((b >> (7 - j)) & 1) for b in send_bytes for j in range(8)]
+        bits = [((b >> (7 - j)) & 1) for b in self.last_sent_bytes for j in range(8)]
 
-        cocotb.log.info(f"CPU {self.name} → sending bytes: echoed_prn=0x{send_bytes[0]:02X}, "
+        cocotb.log.info(f"CPU {self.name} → sending bytes: echoed_prn=0x{self.last_sent_bytes[0]:02X}, "
                         f"desired=0x{self._desired:02X}, valid=0x{self._desired_valid:02X}")
 
         return bits
@@ -147,8 +152,7 @@ async def perform_transaction(dut, cpu_list):
     return master_bytes
 
 
-@cocotb.test()
-async def test_project(dut):
+async def setup_testbench(dut):
     dut._log.info("Start")
 
     clock = Clock(dut.clk, 122, unit="ns")
@@ -169,83 +173,57 @@ async def test_project(dut):
         SimulatedCPU("CPU1", 4, RESET_PRGS[1]),
         SimulatedCPU("CPU2", 6, RESET_PRGS[2])
     ]
-    current_prgs = list(RESET_PRGS)
-    accepted_outputs = [0, 0, 0]
-    accepted_valids = [0, 0, 0]
-    voted = 0
+    return cpus, VoterModel()
 
-    # =================================================================
-    # Test 1: All valid → voted = 0xA5
-    # =================================================================
-    dut._log.info("=== Test 1: All valid → voted = 0xA5 ===")
-    dut.ui_in.value = 0xA5
+async def run_frame(dut, cpus, model, title, switches):
+    dut._log.info(title)
+    dut.ui_in.value = switches
+
+    expected_majority = list(model.majority_bytes)
+    expected_echoes = []
+    outputs = []
+    valids = []
+    frame_valids = []
+
     for cpu in cpus:
-        cpu.frame_set_desired_out(0xA5, valid=True, desired_valid=0xFF)
+        expected_echoes.append(cpu.staged_prn if cpu._good_prg else cpu.staged_prn ^ 0xFF)
+        outputs.append(cpu._desired)
+        valids.append(cpu._desired_valid)
+        frame_valids.append(cpu._good_prg)
 
     master_bytes = await perform_transaction(dut, cpus)
-    current_prgs = [compute_next(prg) for prg in current_prgs]
-    expected_majority = [0, 0, 0]
+
     for idx, sent in enumerate(master_bytes):
-        assert sent[0] == current_prgs[idx]
-        assert sent[1] == 0xA5
+        assert cpus[idx].last_sent_bytes[0] == expected_echoes[idx]
+        assert sent[1] == switches
         assert sent[2] == expected_majority[idx]
-    accepted_outputs = [0xA5, 0xA5, 0xA5]
-    accepted_valids = [0xFF, 0xFF, 0xFF]
-    voted = compute_majority(accepted_outputs, accepted_valids, voted)
+
+    expected_voted = model.apply_frame(outputs, valids, frame_valids)
+    assert int(dut.uo_out.value) == expected_voted
+    return master_bytes
+
+
+@cocotb.test()
+async def test_project(dut):
+    cpus, model = await setup_testbench(dut)
+
+    for cpu in cpus:
+        cpu.frame_set_desired_out(0xA5, valid=True, desired_valid=0xFF)
+    await run_frame(dut, cpus, model, "=== Test 1: All valid -> voted = 0xA5 ===", 0xA5)
     assert int(dut.uo_out.value) == 0xA5
     dut._log.info("Test 1 PASSED")
 
-    # =================================================================
-    # Test 2: All valid → voted = 0x5A
-    # =================================================================
-    dut._log.info("=== Test 2: Per-bit valid masks drive the vote ===")
-    dut.ui_in.value = 0x5A
     cpus[0].frame_set_desired_out(0x0F, valid=True, desired_valid=0x0F)
     cpus[1].frame_set_desired_out(0x03, valid=True, desired_valid=0x03)
     cpus[2].frame_set_desired_out(0x05, valid=True, desired_valid=0x05)
-
-    master_bytes = await perform_transaction(dut, cpus)
-    current_prgs = [compute_next(prg) for prg in current_prgs]
-    expected_majority = compute_majority_bytes(
-        accepted_outputs,
-        accepted_valids,
-        [True, True, True],
-        voted,
-    )
-    for idx, sent in enumerate(master_bytes):
-        assert sent[0] == current_prgs[idx]
-        assert sent[1] == 0x5A
-        assert sent[2] == expected_majority[idx]
-    accepted_outputs = [0x0F, 0x03, 0x05]
-    accepted_valids = [0x0F, 0x03, 0x05]
-    voted = compute_majority(accepted_outputs, accepted_valids, voted)
+    await run_frame(dut, cpus, model, "=== Test 2: Per-bit valid masks drive the vote ===", 0x5A)
     assert int(dut.uo_out.value) == 0xA7
     dut._log.info("Test 2 PASSED")
 
-    # =================================================================
-    # Test 3: Only CPU0 valid → voted stays 0x5A
-    # =================================================================
-    dut._log.info("=== Test 3: Only one valid → voted stays 0x5A ===")
-    dut.ui_in.value = 0x3C
     cpus[0].frame_set_desired_out(0x08, valid=True, desired_valid=0x08)
     cpus[1].frame_set_desired_out(0xF0, valid=False, desired_valid=0xF0)
     cpus[2].frame_set_desired_out(0x00, valid=False, desired_valid=0xFF)
-
-    master_bytes = await perform_transaction(dut, cpus)
-    current_prgs = [compute_next(prg) for prg in current_prgs]
-    expected_majority = compute_majority_bytes(
-        accepted_outputs,
-        accepted_valids,
-        [True, True, True],
-        voted,
-    )
-    for idx, sent in enumerate(master_bytes):
-        assert sent[0] == current_prgs[idx]
-        assert sent[1] == 0x3C
-        assert sent[2] == expected_majority[idx]
-    accepted_outputs[0] = 0x08
-    accepted_valids[0] = 0x08
-    voted = compute_majority(accepted_outputs, accepted_valids, voted)
+    await run_frame(dut, cpus, model, "=== Test 3: Only one valid -> voted stays unchanged ===", 0x3C)
     assert int(dut.uo_out.value) == 0xA7
     dut._log.info("Test 3 PASSED (voted correctly unchanged)")
 
