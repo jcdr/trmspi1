@@ -51,12 +51,9 @@ module tt_um_tmr_spi_slice #(
     input  wire       miso,
     input  wire [7:0] switches,
     input  wire [7:0] voted,
-    input  wire [7:0] majority,
     output wire       mosi,
-    output wire [7:0] desired,
-    output wire [7:0] desired_valid,
-    output wire [7:0] previous_voted,
-    output wire       frame_valid
+    output wire [7:0] resolved,
+    output wire [7:0] majority
 );
 
     reg [7:0] tx_shift;
@@ -69,12 +66,11 @@ module tt_um_tmr_spi_slice #(
 
     wire prng_fb = current_prn[7] ^ current_prn[5] ^ current_prn[4] ^ current_prn[3];
     wire [7:0] next_prn = {current_prn[6:0], prng_fb};
+    wire frame_valid = (received_prn == current_prn);
 
     assign mosi = tx_shift[7];
-    assign desired = desired_r;
-    assign desired_valid = desired_valid_r;
-    assign previous_voted = previous_voted_r;
-    assign frame_valid = (received_prn == current_prn);
+    assign resolved = (frame_valid & desired_valid_r) ? desired_r : previous_voted_r;
+    assign majority = frame_valid & desired_valid_r & ~(desired_r ^ voted);
 
     always @(posedge clk or negedge rst_n) begin
         if (!rst_n) begin
@@ -174,18 +170,6 @@ module tt_um_tmr_voter (
     wire mosi0;
     wire mosi1;
     wire mosi2;
-    wire [7:0] desired0;
-    wire [7:0] desired1;
-    wire [7:0] desired2;
-    wire [7:0] desired_valid0;
-    wire [7:0] desired_valid1;
-    wire [7:0] desired_valid2;
-    wire [7:0] p0_out;
-    wire [7:0] p1_out;
-    wire [7:0] p2_out;
-    wire frame_valid0;
-    wire frame_valid1;
-    wire frame_valid2;
     wire [7:0] resolved0;
     wire [7:0] resolved1;
     wire [7:0] resolved2;
@@ -206,12 +190,9 @@ module tt_um_tmr_voter (
         .miso(miso0),
         .switches(switches),
         .voted(new_voted),
-        .majority(majority0),
         .mosi(mosi0),
-        .desired(desired0),
-        .desired_valid(desired_valid0),
-        .previous_voted(p0_out),
-        .frame_valid(frame_valid0)
+        .resolved(resolved0),
+        .majority(majority0)
     );
 
     tt_um_tmr_spi_slice #(
@@ -226,12 +207,9 @@ module tt_um_tmr_voter (
         .miso(miso1),
         .switches(switches),
         .voted(new_voted),
-        .majority(majority1),
         .mosi(mosi1),
-        .desired(desired1),
-        .desired_valid(desired_valid1),
-        .previous_voted(p1_out),
-        .frame_valid(frame_valid1)
+        .resolved(resolved1),
+        .majority(majority1)
     );
 
     tt_um_tmr_spi_slice #(
@@ -246,31 +224,20 @@ module tt_um_tmr_voter (
         .miso(miso2),
         .switches(switches),
         .voted(new_voted),
-        .majority(majority2),
         .mosi(mosi2),
-        .desired(desired2),
-        .desired_valid(desired_valid2),
-        .previous_voted(p2_out),
-        .frame_valid(frame_valid2)
+        .resolved(resolved2),
+        .majority(majority2)
     );
 
     genvar i;
     generate
         for (i = 0; i < 8; i = i + 1) begin : gen_voter_bits
-            assign resolved0[i] = (frame_valid0 & desired_valid0[i]) ? desired0[i] : p0_out[i];
-            assign resolved1[i] = (frame_valid1 & desired_valid1[i]) ? desired1[i] : p1_out[i];
-            assign resolved2[i] = (frame_valid2 & desired_valid2[i]) ? desired2[i] : p2_out[i];
-
             tt_um_tmr_voter_bit voter_bit (
                 .in0(resolved0[i]),
                 .in1(resolved1[i]),
                 .in2(resolved2[i]),
                 .voted(new_voted[i])
             );
-
-            assign majority0[i] = frame_valid0 & desired_valid0[i] & (desired0[i] == new_voted[i]);
-            assign majority1[i] = frame_valid1 & desired_valid1[i] & (desired1[i] == new_voted[i]);
-            assign majority2[i] = frame_valid2 & desired_valid2[i] & (desired2[i] == new_voted[i]);
         end
     endgenerate
 
