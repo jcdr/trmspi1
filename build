@@ -20,6 +20,44 @@ export PDK_ROOT=~/IHP-Open-PDK
 export PDK=ihp-sg13g2
 export LIBRELANE_TAG=3.0.0rc1
 
+print_summary() {
+    local synth_report="runs/wokwi/06-yosys-synthesis/reports/stat.rpt"
+    local pnr_metrics="runs/wokwi/43-openroad-stamidpnr-3/state_out.json"
+
+    python3 - "$synth_report" "$pnr_metrics" <<'PY'
+import json
+import pathlib
+import re
+import sys
+
+synth_report = pathlib.Path(sys.argv[1])
+pnr_metrics = pathlib.Path(sys.argv[2])
+
+if not synth_report.exists():
+    print(f"Missing synthesis report: {synth_report}", file=sys.stderr)
+    sys.exit(1)
+
+if not pnr_metrics.exists():
+    print(f"Missing OpenROAD metrics: {pnr_metrics}", file=sys.stderr)
+    sys.exit(1)
+
+match = re.search(r"^\s*(\d+)\s+[\d.E+\-]+\s+cells$", synth_report.read_text(), re.MULTILINE)
+if match is None:
+    print(f"Could not find synthesized cell count in {synth_report}", file=sys.stderr)
+    sys.exit(1)
+
+metrics = json.loads(pnr_metrics.read_text())["metrics"]
+
+synth_cells = int(match.group(1))
+post_cts_cells = int(metrics["design__instance__count__stdcell"])
+utilization = float(metrics["design__instance__utilization"]) * 100.0
+
+print(f"Tile utilization: {utilization:.2f}%")
+print(f"Synthesized cells: {synth_cells}")
+print(f"Cells after CTS/timing repair: {post_cts_cells}")
+PY
+}
+
 if [ "$test_only" -eq 1 ]; then
     time (cd test/ && make -B)
     exit $?
@@ -32,3 +70,4 @@ time (\
 )
 
 cat runs/wokwi/01-verilator-lint/verilator-lint.log
+print_summary
