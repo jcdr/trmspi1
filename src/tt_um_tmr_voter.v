@@ -18,9 +18,9 @@
 // In other words: Data is clocked out on the falling edge and clocked in on the rising edge, with SCLK starting low.
 // This matches the default SPI mode on the RP2350 microcontroller (e.g., in the Raspberry Pi Pico 2 SDK and hardware).
 // Frame size: 24 bits
-// Master to Slave: next_prn[7:0], switches[7:0], majority_valid[7:0]
+// Master to Slave: next_prn[7:0], switches[7:0], majority_byte[7:0]
 // Slave to Master: echoed_prn[7:0], desired_out[7:0], desired_valid[7:0]
-// Majority valid bit: 1 if that voted output bit currently has a valid 2-of-3 majority, 0 otherwise
+// Majority bit: 1 if that CPU sent a valid bit matching the voted output, 0 otherwise
 // PRNG: 8-bit LFSR, polynomial x^8 + x^6 + x^5 + x^4 + 1, initial 8'h2A shared with CPUs
 // Validation: Compute next_prn from current_prn, send it, and compare the received echoed_prn
 // against the previous current_prn. Invalid frames don't update pX_out.
@@ -28,31 +28,27 @@
 // SCLK: 1.024MHz (main clk / 8)
 
 module tt_um_tmr_voter_bit (
-    input  wire desired0,
-    input  wire valid0,
-    input  wire desired1,
-    input  wire valid1,
-    input  wire desired2,
-    input  wire valid2,
-    input  wire previous_voted,
-    output wire voted,
-    output wire majority0,
-    output wire majority1,
-    output wire majority2
+    input  wire in0,
+    input  wire in1,
+    input  wire in2,
+    output wire voted
 );
 
-    wire voted_one = (valid0 & valid1 & desired0 & desired1) |
-                     (valid0 & valid2 & desired0 & desired2) |
-                     (valid1 & valid2 & desired1 & desired2);
-    wire voted_zero = (valid0 & valid1 & ~desired0 & ~desired1) |
-                      (valid0 & valid2 & ~desired0 & ~desired2) |
-                      (valid1 & valid2 & ~desired1 & ~desired2);
-    wire voted_valid = voted_one | voted_zero;
+    assign voted = (in0 & in1) | (in0 & in2) | (in1 & in2);
 
-    assign voted = voted_one | (~voted_valid & previous_voted);
-    assign majority0 = valid0 & ((valid1 & (desired0 == desired1)) | (valid2 & (desired0 == desired2)));
-    assign majority1 = valid1 & ((valid0 & (desired1 == desired0)) | (valid2 & (desired1 == desired2)));
-    assign majority2 = valid2 & ((valid0 & (desired2 == desired0)) | (valid1 & (desired2 == desired1)));
+endmodule
+
+module tt_um_tmr_spi_bit (
+    input  wire desired0,
+    input  wire valid0,
+    input  wire previous_voted,
+    input  wire voted,
+    output wire resolved,
+    output wire majority
+);
+
+    assign resolved = valid0 ? desired0 : previous_voted;
+    assign majority = valid0 & (desired0 == voted);
 
 endmodule
 
@@ -116,45 +112,55 @@ module tt_um_tmr_voter (
     reg [7:0] desired0, desired1, desired2;
     reg [7:0] desired_valid0, desired_valid1, desired_valid2;
 
-    // NEW: Combinational wires for updates (fixes accumulation and update timing)
-    wire valid0 = (received_next0 == current_prn);
-    wire valid1 = (received_next1 == current_prn);
-    wire valid2 = (received_next2 == current_prn);
-    wire [7:0] new_p0_out = valid0 ? desired0 : p0_out;
-    wire [7:0] new_p1_out = valid1 ? desired1 : p1_out;
-    wire [7:0] new_p2_out = valid2 ? desired2 : p2_out;
-    wire [7:0] new_p0_valid = valid0 ? desired_valid0 : p0_valid;
-    wire [7:0] new_p1_valid = valid1 ? desired_valid1 : p1_valid;
-    wire [7:0] new_p2_valid = valid2 ? desired_valid2 : p2_valid;
+    wire frame_valid0 = (received_next0 == current_prn);
+    wire frame_valid1 = (received_next1 == current_prn);
+    wire frame_valid2 = (received_next2 == current_prn);
+    wire [7:0] resolved0;
+    wire [7:0] resolved1;
+    wire [7:0] resolved2;
     wire [7:0] majority0;
     wire [7:0] majority1;
     wire [7:0] majority2;
     wire [7:0] new_voted;
-    wire [7:0] new_voted_valid = majority0 | majority1 | majority2;
 
     genvar i;
     generate
         for (i = 0; i < 8; i = i + 1) begin : gen_voter_bits
-            tt_um_tmr_voter_bit voter_bit (
-                .desired0(new_p0_out[i]),
-                .valid0(new_p0_valid[i]),
-                .desired1(new_p1_out[i]),
-                .valid1(new_p1_valid[i]),
-                .desired2(new_p2_out[i]),
-                .valid2(new_p2_valid[i]),
-                .previous_voted(voted[i]),
+            tt_um_tmr_spi_bit spi0_bit (
+                .desired0(desired0[i]),
+                .valid0(frame_valid0 & desired_valid0[i]),
+                .previous_voted(p0_out[i]),
                 .voted(new_voted[i]),
-                .majority0(majority0[i]),
-                .majority1(majority1[i]),
-                .majority2(majority2[i])
+                .resolved(resolved0[i]),
+                .majority(majority0[i])
+            );
+            tt_um_tmr_spi_bit spi1_bit (
+                .desired0(desired1[i]),
+                .valid0(frame_valid1 & desired_valid1[i]),
+                .previous_voted(p1_out[i]),
+                .voted(new_voted[i]),
+                .resolved(resolved1[i]),
+                .majority(majority1[i])
+            );
+            tt_um_tmr_spi_bit spi2_bit (
+                .desired0(desired2[i]),
+                .valid0(frame_valid2 & desired_valid2[i]),
+                .previous_voted(p2_out[i]),
+                .voted(new_voted[i]),
+                .resolved(resolved2[i]),
+                .majority(majority2[i])
+            );
+            tt_um_tmr_voter_bit voter_bit (
+                .in0(resolved0[i]),
+                .in1(resolved1[i]),
+                .in2(resolved2[i]),
+                .voted(new_voted[i])
             );
         end
     endgenerate
 
     reg [7:0] p0_out, p1_out, p2_out;
-    reg [7:0] p0_valid, p1_valid, p2_valid;
     reg [7:0] voted;
-    reg [7:0] voted_valid;
 
     reg [7:0] current_prn;  // Previous PRN expected back from CPUs this frame
     wire [7:0] next_prn;    // Next PRN sent to CPUs this frame
@@ -173,8 +179,6 @@ module tt_um_tmr_voter (
             timer <= 13'd4096;  // start first transaction after ~0.5 ms (half of the 1 kHz cycle)
             voted <= 0;
             p0_out <= 0; p1_out <= 0; p2_out <= 0;
-            p0_valid <= 0; p1_valid <= 0; p2_valid <= 0;
-            voted_valid <= 0;
             state <= 0;
             bit_cnt <= 0;
             // MINIMAL FIX: removed phase/bit_pos init
@@ -235,9 +239,9 @@ module tt_um_tmr_voter (
                             tx_shift1 <= switches;
                             tx_shift2 <= switches;
                         end else if (bit_cnt == 5'd15) begin
-                            tx_shift0 <= voted_valid;
-                            tx_shift1 <= voted_valid;
-                            tx_shift2 <= voted_valid;
+                            tx_shift0 <= majority0;
+                            tx_shift1 <= majority1;
+                            tx_shift2 <= majority2;
                         end else begin
                             tx_shift0 <= {tx_shift0[6:0], 1'b0};
                             tx_shift1 <= {tx_shift1[6:0], 1'b0};
@@ -247,15 +251,10 @@ module tt_um_tmr_voter (
                         if (bit_cnt == 23) begin
                             cs_n_out <= 1;
                             state <= 0;
-                            // Process received: Use combinational wires for validation/accumulation/updates
-                            p0_out <= new_p0_out;
-                            p1_out <= new_p1_out;
-                            p2_out <= new_p2_out;
-                            p0_valid <= new_p0_valid;
-                            p1_valid <= new_p1_valid;
-                            p2_valid <= new_p2_valid;
+                            p0_out <= new_voted;
+                            p1_out <= new_voted;
+                            p2_out <= new_voted;
                             voted <= new_voted;
-                            voted_valid <= new_voted_valid;
                             // Advance PRNG for next cycle
                             current_prn <= next_prn;
                         end
