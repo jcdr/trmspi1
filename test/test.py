@@ -255,6 +255,11 @@ async def prime_vote(dut, cpus, model, voted):
     assert int(dut.uo_out.value) == voted
 
 
+async def run_followup_frame(dut, cpus, model, title, switches):
+    configure_all_cpus(cpus, switches)
+    return await run_frame(dut, cpus, model, title, switches)
+
+
 @cocotb.test()
 async def test_all_valid_vote(dut):
     cpus, model = await setup_testbench(dut)
@@ -396,3 +401,49 @@ async def test_valid_zero_bits_can_clear_previous_ones(dut):
     )
     assert int(dut.uo_out.value) == 0x0F
     dut._log.info("Test 7 PASSED")
+
+
+@cocotb.test()
+async def test_two_valid_sources_can_update_the_vote(dut):
+    cpus, model = await setup_testbench(dut)
+
+    await prime_vote(dut, cpus, model, 0x00)
+
+    configure_cpu_frame(
+        cpus,
+        [0x96, 0x96, 0x69],
+        [True, True, False],
+        [0xFF, 0xFF, 0xFF],
+    )
+    await run_frame(
+        dut,
+        cpus,
+        model,
+        "=== Test 8: Two valid sources can update the vote ===",
+        0x96,
+    )
+    assert int(dut.uo_out.value) == 0x96
+    dut._log.info("Test 8 PASSED")
+
+
+@cocotb.test()
+async def test_two_disagreeing_valid_sources_preserve_the_previous_vote(dut):
+    cpus, model = await setup_testbench(dut)
+
+    await prime_vote(dut, cpus, model, 0x5A)
+
+    configure_cpu_frame(
+        cpus,
+        [0xFF, 0x00, 0x00],
+        [True, True, False],
+        [0xFF, 0xFF, 0xFF],
+    )
+    await run_frame(
+        dut,
+        cpus,
+        model,
+        "=== Test 9: Two disagreeing valid sources preserve the previous vote ===",
+        0xC3,
+    )
+    assert int(dut.uo_out.value) == 0x5A
+    dut._log.info("Test 9 PASSED")
