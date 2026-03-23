@@ -2,121 +2,129 @@
 
 ## What is this?
 
-This project is a Triple Modular Redundancy (TMR) voter chip that exchanges one SPI frame per millisecond with 3 redundant CPUs and publishes an 8-bit voted output.
+This is a Triple Modular Redundancy (TMR) voter chip for safety-critical embedded systems.
+It interfaces with 3 redundant low-power processors via SPI and votes their 8 output bits.
 
-- **Inputs**: `ui_in[7:0]` is the hardware input byte sent to all 3 CPUs.
-- **Outputs**: `uo_out[7:0]` is the voted output byte.
-- **SPI interface** on `uio`:
-  - shared `cs_n` on `uio[0]`
-  - shared `sclk` on `uio[1]`
-  - `miso0` / `mosi0` on `uio[2]` / `uio[3]`
-  - `miso1` / `mosi1` on `uio[4]` / `uio[5]`
-  - `miso2` / `mosi2` on `uio[6]` / `uio[7]`
+- **Inputs**: 8 switch inputs from the demo board (`ui_in[7:0]`), sent to all 3 processors.
+- **Outputs**: 8 voted discrete signals (`uo_out[7:0]`).
+- **SPI Interface** (on bidirectional pins `uio`):
+  - Shared `cs_n` (`uio[0]`, out)
+  - Shared `sclk` (`uio[1]`, out)
+  - `miso0` (`uio[2]`, in), `mosi0` (`uio[3]`, out)
+  - `miso1` (`uio[4]`, in), `mosi1` (`uio[5]`, out)
+  - `miso2` (`uio[6]`, in), `mosi2` (`uio[7]`, out)
 
-The chip is the SPI master. It polls all 3 CPUs in parallel and votes the 3 returned responses bit by bit.
+## How does it work?
 
-## SPI Protocol
+The chip acts as SPI master using SPI Mode 0 (`CPOL=0`, `CPHA=0`).
+This means:
+- `sclk` idles low
+- data is sampled on the rising edge
+- data is shifted on the falling edge
 
-The design uses SPI mode 0:
-- `sclk` idle low
-- data sampled on the rising edge
-- data shifted on the falling edge
+The design polls all 3 CPUs in parallel once per millisecond.
 
-Each frame is 24 bits.
-
-### Master to CPU
-
-The chip sends 3 bytes to each CPU:
-1. `next_prn`
-2. `switches`
-3. `majority_byte`
-
-### CPU to master
-
-Each CPU sends 3 bytes back:
-1. `echoed_prn`
-2. `desired_out`
-3. `desired_valid`
-
-## PRG Handling
+- Frame size: 24 bits (3 bytes).
+- Master to each processor: `next_prn` + `switches` + `majority_byte`.
+- Processor to master: `echoed_prn` + `desired_out` + `desired_valid`.
+- SPI clock: about `1.024 MHz` from the `8.192 MHz` project clock.
 
 Each SPI slice has its own 8-bit LFSR with polynomial `x^8 + x^6 + x^5 + x^4 + 1`.
-
-The 3 reset seeds are different:
+The 3 reset seeds are:
 - CPU0 slice: `0x2A`
 - CPU1 slice: `0x54`
 - CPU2 slice: `0xA8`
 
-The CPU side does not need to compute the PRG sequence. It only needs to:
-- receive `next_prn`
-- stage that byte locally
-- echo that staged byte on the following frame
+The PRG protocol is staged across frames:
+- on frame `N`, the master sends a new `next_prn` byte
+- the CPU stores that byte locally
+- on frame `N+1`, the CPU echoes that stored byte as `echoed_prn`
+- the master compares `echoed_prn` against the locally stored PRG state for that slice
 
-So the intended sequence is:
-- on frame `N`, the master sends a new PRG byte
-- the CPU stores that byte
-- on frame `N+1`, the CPU echoes that stored byte
-- the master compares the echoed byte with the PRG state it already kept locally for that slice
+The CPU does not need to compute the PRG sequence itself. It only needs to stage and echo the last received PRG byte.
 
-If the echoed byte is wrong, that slice is considered invalid for that frame.
+If the echoed PRG byte is wrong for one slice, that slice is invalid for that frame.
 
-## Voting Rules
-
-Each CPU returns:
-- `desired_out`: the output bits it wants
+Each processor also returns:
+- `desired_out`: the 8 bits it wants to drive
 - `desired_valid`: one validity bit per output bit
 
 For each slice and each bit:
-- if the frame is valid and the `desired_valid` bit is `1`, the slice contributes the CPU's `desired_out` bit
+- if the frame is valid and the corresponding `desired_valid` bit is `1`, the slice contributes the processor's `desired_out` bit
 - otherwise the slice falls back to its own stored copy of the previously voted output bit
 
-That per-slice fallback state is kept redundantly inside each slice so that a bad frame does not force a common single-point output register into the voting path.
+That per-slice fallback state is intentionally stored redundantly inside each slice.
 
-The final output vote is a pure bitwise 2-of-3 majority of the 3 slice-resolved bits.
+The common voter then performs a pure bitwise 2-of-3 majority over the 3 slice-resolved bits.
 
-## Majority Feedback Byte
-
-The third byte sent by the master is a per-CPU `majority_byte`.
-
-For each CPU bit:
+The `majority_byte` sent back to each processor is also per-CPU:
 - `1` means that CPU sent a valid bit and that bit matched the final voted output
-- `0` means that CPU bit was invalid or disagreed with the final voted output
+- `0` means the CPU bit was invalid or disagreed with the final voted output
 
-This byte is sent one frame later, because it is computed from the frame that just completed and transmitted on the next frame.
+This `majority_byte` is reported one frame later, because it is computed from the frame that just completed and transmitted in the next frame.
 
-If a CPU frame is rejected because of a bad echoed PRG byte, that CPU's next `majority_byte` is cleared.
-
-## Timing
-
-- project clock: `8.192 MHz`
-- SPI clock: about `1.024 MHz`
-- frame period: `1 ms`
+Timing summary:
 - first frame after reset: about `0.5 ms`
+- steady frame period: `1 ms`
+
+### Programming the CPU Side (C Code Example)
+
+The CPU side only needs to stage the received PRG byte and echo it back on the next frame.
+It does not need to compute the PRG sequence.
+
+```c
+#include <stdint.h>
+
+typedef struct {
+    uint8_t staged_prn;
+    uint8_t desired_out;
+    uint8_t desired_valid;
+} cpu_state_t;
+
+// rx_buffer receives: next_prn, switches, majority_byte
+// tx_buffer sends:    echoed_prn, desired_out, desired_valid
+void spi_slave_handler(cpu_state_t *state, uint8_t rx_buffer[3], uint8_t tx_buffer[3]) {
+    uint8_t next_prn = rx_buffer[0];
+    uint8_t switches = rx_buffer[1];
+    uint8_t majority = rx_buffer[2];
+
+    tx_buffer[0] = state->staged_prn;
+    tx_buffer[1] = compute_desired_outputs(switches, majority);
+    tx_buffer[2] = compute_desired_valid(switches, majority);
+
+    state->staged_prn = next_prn;
+}
+```
+
+This mirrors the current Verilog protocol: staged PRG echo, per-bit output validity, and per-CPU majority feedback.
+
+## Inputs / Outputs
+
+- **Dedicated Inputs (`ui_in[7:0]`)**: Switches from the demo board, forwarded to all 3 processors.
+- **Dedicated Outputs (`uo_out[7:0]`)**: Voted output byte.
+- **Bidirectional IOs (`uio`)**: SPI signals as listed above.
 
 ## How to test
 
-Run the RTL cocotb tests from the project root:
+From the project root:
 
-```sh
-./build -t
-```
-
-Print the latest utilization and cell counts without building:
-
-```sh
-./build -s
-```
-
-Run tests and then print the same summary:
-
-```sh
-./build -t -s
-```
+- Run the RTL cocotb tests:
+  ```sh
+  ./build -t
+  ```
+- Print the latest utilization and cell counts:
+  ```sh
+  ./build -s
+  ```
+- Run the tests and then print the same summary:
+  ```sh
+  ./build -t -s
+  ```
 
 The current cocotb suite covers:
-- basic valid voting
+- valid PRG echo handling
 - per-bit validity masks
-- majority-byte timing and contents
+- per-CPU `majority_byte` timing and contents
 - rejected frames after bad echoed PRG bytes
 - fallback to the previously voted state
 - a 256-frame randomized no-reset stress test with one injected SPI bit fault per frame
@@ -125,14 +133,12 @@ Waveforms are written to `test/tb.fst`.
 
 ## External hardware
 
-This design expects 3 external CPUs or equivalent SPI slaves. Each one needs only:
-- one MISO line to the chip
-- one MOSI line from the chip
-- the shared `cs_n`
-- the shared `sclk`
+- 3 external CPUs or equivalent SPI slaves connected to the shared `cs_n` and `sclk`
+- one dedicated `miso` and one dedicated `mosi` line per CPU
+- demo board clock at `8.192 MHz`
 
-Each CPU should:
+Each external CPU should:
 - stage the received `next_prn`
-- compute its `desired_out`
-- compute its `desired_valid`
-- return those 3 bytes on the next poll
+- compute `desired_out`
+- compute `desired_valid`
+- return `echoed_prn`, `desired_out`, and `desired_valid` on the next poll
