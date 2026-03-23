@@ -447,3 +447,131 @@ async def test_two_disagreeing_valid_sources_preserve_the_previous_vote(dut):
     )
     assert int(dut.uo_out.value) == 0x5A
     dut._log.info("Test 9 PASSED")
+
+
+@cocotb.test()
+async def test_zero_valid_masks_keep_the_vote_and_clear_majority_bytes(dut):
+    cpus, model = await setup_testbench(dut)
+
+    await prime_vote(dut, cpus, model, 0xC3)
+
+    configure_cpu_frame(
+        cpus,
+        [0x00, 0xFF, 0x3C],
+        [True, True, True],
+        [0x00, 0x00, 0x00],
+    )
+    await run_frame(
+        dut,
+        cpus,
+        model,
+        "=== Test 10: Zero valid masks keep the vote ===",
+        0x12,
+    )
+    assert int(dut.uo_out.value) == 0xC3
+
+    master_bytes = await run_followup_frame(
+        dut,
+        cpus,
+        model,
+        "=== Test 10 follow-up: zero valid masks clear the next majority bytes ===",
+        0x55,
+    )
+    assert [sent[2] for sent in master_bytes] == [0x00, 0x00, 0x00]
+    dut._log.info("Test 10 PASSED")
+
+
+@cocotb.test()
+async def test_dissenting_cpu_gets_a_zero_majority_byte(dut):
+    cpus, model = await setup_testbench(dut)
+
+    await prime_vote(dut, cpus, model, 0x00)
+
+    configure_cpu_frame(
+        cpus,
+        [0xAA, 0xAA, 0x55],
+        [True, True, True],
+        [0xFF, 0xFF, 0xFF],
+    )
+    await run_frame(
+        dut,
+        cpus,
+        model,
+        "=== Test 11: A dissenting CPU gets no majority bits ===",
+        0xAA,
+    )
+    assert int(dut.uo_out.value) == 0xAA
+
+    master_bytes = await run_followup_frame(
+        dut,
+        cpus,
+        model,
+        "=== Test 11 follow-up: the dissenting CPU sees a zero majority byte ===",
+        0x33,
+    )
+    assert [sent[2] for sent in master_bytes] == [0xFF, 0xFF, 0x00]
+    dut._log.info("Test 11 PASSED")
+
+
+@cocotb.test()
+async def test_partial_majority_bytes_are_reported_per_cpu(dut):
+    cpus, model = await setup_testbench(dut)
+
+    await prime_vote(dut, cpus, model, 0x00)
+
+    configure_cpu_frame(
+        cpus,
+        [0xF0, 0xCC, 0xC0],
+        [True, True, True],
+        [0xFF, 0xFF, 0xFF],
+    )
+    await run_frame(
+        dut,
+        cpus,
+        model,
+        "=== Test 12: Majority bytes can be partial per CPU ===",
+        0xC0,
+    )
+    assert int(dut.uo_out.value) == 0xC0
+
+    master_bytes = await run_followup_frame(
+        dut,
+        cpus,
+        model,
+        "=== Test 12 follow-up: partial majority bytes are sent back ===",
+        0x11,
+    )
+    assert [sent[2] for sent in master_bytes] == [0xCF, 0xF3, 0xFF]
+    dut._log.info("Test 12 PASSED")
+
+
+@cocotb.test()
+async def test_all_bad_prgs_keep_the_vote_and_clear_majority_bytes(dut):
+    cpus, model = await setup_testbench(dut)
+
+    await reach_masked_vote(dut, cpus, model)
+
+    configure_cpu_frame(
+        cpus,
+        [0x00, 0xFF, 0x3C],
+        [False, False, False],
+        [0xFF, 0xFF, 0xFF],
+    )
+    await run_frame(
+        dut,
+        cpus,
+        model,
+        "=== Test 13: All bad PRGs reject the whole frame ===",
+        0x12,
+    )
+    assert int(dut.uo_out.value) == 0xA7
+
+    master_bytes = await run_followup_frame(
+        dut,
+        cpus,
+        model,
+        "=== Test 13 follow-up: a rejected frame clears all next majority bytes ===",
+        0x34,
+    )
+    assert [sent[2] for sent in master_bytes] == [0x00, 0x00, 0x00]
+    dut._log.info("Test 13 PASSED")
