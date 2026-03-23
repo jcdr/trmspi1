@@ -2,99 +2,137 @@
 
 ## What is this?
 
-This is a Triple Modular Redundancy (TMR) voter chip for safety-critical embedded systems (e.g., medical devices).
-It interfaces with 3 redundant low-power processors (like Ambiq Apollo) via SPI to vote on their outputs,
-ensuring fault tolerance against processor or software malfunctions.
+This project is a Triple Modular Redundancy (TMR) voter chip that exchanges one SPI frame per millisecond with 3 redundant CPUs and publishes an 8-bit voted output.
 
-- **Inputs**: 8 switch inputs from the demo board (ui_in), sent to processors.
-- **Outputs**: 8 voted discrete signals (uo_out, connected to 7-segment + dot display on demo board).
-- **SPI Interface** (on bidirectional pins uio):
-  - Shared cs_n (uio[0], out)
-  - Shared sclk (uio[1], out)
-  - miso0 (uio[2], in), mosi0 (uio[3], out)
-  - miso1 (uio[4], in), mosi1 (uio[5], out)
-  - miso2 (uio[6], in), mosi2 (uio[7], out)
+- **Inputs**: `ui_in[7:0]` is the hardware input byte sent to all 3 CPUs.
+- **Outputs**: `uo_out[7:0]` is the voted output byte.
+- **SPI interface** on `uio`:
+  - shared `cs_n` on `uio[0]`
+  - shared `sclk` on `uio[1]`
+  - `miso0` / `mosi0` on `uio[2]` / `uio[3]`
+  - `miso1` / `mosi1` on `uio[4]` / `uio[5]`
+  - `miso2` / `mosi2` on `uio[6]` / `uio[7]`
 
-## How does it work?
+The chip is the SPI master. It polls all 3 CPUs in parallel and votes the 3 returned responses bit by bit.
 
-The chip acts as SPI master using SPI Mode 0 (CPOL=0, CPHA=0). This
-means: Clock polarity (CPOL) is 0 (SCLK idles low), clock phase (CPHA)
-is 0 (data sampled on the first/rising clock edge, shifted on the
-second/falling clock edge). In other words: Data is clocked out on the
-falling edge and clocked in on the rising edge, with SCLK starting
-low. This matches the default SPI mode on the RP2350 microcontroller
-(e.g., in the Raspberry Pi Pico 2 SDK and hardware, unless
-reconfigured).
+## SPI Protocol
 
-- Generates a pseudo-random number (PRN) using a shared LFSR PRNG (initial seed 0x01). The PRNG is an 8-bit Linear Feedback Shift Register (LFSR) with the polynomial x^8 + x^6 + x^5 + x^4 + 1. This is a maximal-length LFSR for 8 bits, providing a period of 255 before repeating. The feedback bit is computed as XOR of bits 7, 5, 4, and 3 (0-indexed, MSB is bit 7).
-- Sends frame to each processor: current_prn (8 bits) + agreement_byte (8 bits) + switches (8 bits).
-- Each CPU receives the current_prn, computes the next_prn using the same PRNG algorithm and parameters (polynomial and feedback as above), and sends back: next_prn (8 bits) + desired_outputs (8 bits) + unused (8 bits).
-- The voting chip also computes the next_prn from the sent current_prn using the identical PRNG algorithm. It then compares each received next_prn from the CPUs against its own computed next_prn. If there's a mismatch for a CPU, that CPU's frame is discarded (the corresponding output value is not updated, keeping the previous value for that channel). This ensures synchronization and detects transmission errors or desyncs.
-- If at least two valid frames (matching next_prn), majority votes the desired_outputs from those valid CPUs.
-- Outputs voted bits to display.
-- Feedback: Per-processor agreement bit (1 if matches majority/voted).
-- Voting cycle: 1kHz (timed internally assuming 8.192MHz clk).
-- Safe state: Outputs 0 if no valid majority.
+The design uses SPI mode 0:
+- `sclk` idle low
+- data sampled on the rising edge
+- data shifted on the falling edge
 
-Processors must compute the next_prn from the received current_prn, include it in their response, compute outputs, and optionally verify the PRNG sequence for coherency across cycles.
+Each frame is 24 bits.
 
-### Programming the PRNG on the CPU Side (C Code Example)
+### Master to CPU
 
-To implement the PRNG on the CPU (slave) side, use the same LFSR algorithm. Here's a simple C function to compute the next 8-bit PRN from the current one. This can be integrated into your SPI slave handler (e.g., for Ambiq Apollo or RP2350 in slave mode). The parameters are fixed: 8-bit value, feedback XOR of bits 7,5,4,3.
+The chip sends 3 bytes to each CPU:
+1. `next_prn`
+2. `switches`
+3. `majority_byte`
 
-#include <stdint.h>
+### CPU to master
 
-// Compute next PRN using 8-bit LFSR (polynomial x^8 + x^6 + x^5 + x^4 + 1)
-// Feedback: XOR of bits 7,5,4,3 (MSB is bit 7)
-uint8_t compute_next_prn(uint8_t current_prn) {
-    uint8_t feedback = (current_prn >> 7) ^ ((current_prn >> 5) & 1) ^ ((current_prn >> 4) & 1) ^ ((current_prn >> 3) & 1);
-    return (current_prn << 1) | feedback;
-}
+Each CPU sends 3 bytes back:
+1. `echoed_prn`
+2. `desired_out`
+3. `desired_valid`
 
-// Example usage in SPI slave handler:
-// Assume you receive a 24-bit frame (3 bytes: current_prn, agreement_byte, switches)
-// And send back 24-bit frame (next_prn, desired_out, unused=0x00)
-void spi_slave_handler(uint8_t rx_buffer[3], uint8_t tx_buffer[3]) {
-    uint8_t current_prn = rx_buffer[0];  // First byte: received current_prn
-    uint8_t agreement = rx_buffer[1];    // Second byte: agreement_byte (use as needed)
-    uint8_t switches = rx_buffer[2];     // Third byte: switches (inputs)
+## PRG Handling
 
-    // Compute next PRN (redundant: same as chip's algorithm, polynomial, and feedback)
-    uint8_t next_prn = compute_next_prn(current_prn);
+Each SPI slice has its own 8-bit LFSR with polynomial `x^8 + x^6 + x^5 + x^4 + 1`.
 
-    // Compute your desired outputs based on switches, agreement, etc.
-    uint8_t desired_out = compute_desired_outputs(switches, agreement);  // Your logic here
+The 3 reset seeds are different:
+- CPU0 slice: `0x2A`
+- CPU1 slice: `0x54`
+- CPU2 slice: `0xA8`
 
-    // Prepare TX frame
-    tx_buffer[0] = next_prn;     // First byte: send next_prn for validation
-    tx_buffer[1] = desired_out;  // Second byte: desired outputs
-    tx_buffer[2] = 0x00;         // Third byte: unused
-}
+The CPU side does not need to compute the PRG sequence. It only needs to:
+- receive `next_prn`
+- stage that byte locally
+- echo that staged byte on the following frame
 
-// Optional: To stay in sync, CPUs can maintain their own PRN state and verify sequence
-// e.g., After sending, update local_prn = next_prn;
-// On next receive, check if received current_prn == local_prn; if not, resync or error.
+So the intended sequence is:
+- on frame `N`, the master sends a new PRG byte
+- the CPU stores that byte
+- on frame `N+1`, the CPU echoes that stored byte
+- the master compares the echoed byte with the PRG state it already kept locally for that slice
 
-This C code mirrors the Verilog exactly for redundancy and ease of implementation. The function is simple, bitwise, and efficient for low-power MCUs. Ensure your SPI slave firmware initializes with the shared seed (0x01) and handles frames correctly.
+If the echoed byte is wrong, that slice is considered invalid for that frame.
 
-## Inputs / Outputs
+## Voting Rules
 
-- **Dedicated Inputs (ui_in[7:0])**: Switches from demo board, forwarded to processors via SPI.
-- **Dedicated Outputs (uo_out[7:0])**: Voted outputs to 7-segment display.
-- **Bidirectional IOs (uio)**: SPI signals as above (oe configured for in/out).
+Each CPU returns:
+- `desired_out`: the output bits it wants
+- `desired_valid`: one validity bit per output bit
+
+For each slice and each bit:
+- if the frame is valid and the `desired_valid` bit is `1`, the slice contributes the CPU's `desired_out` bit
+- otherwise the slice falls back to its own stored copy of the previously voted output bit
+
+That per-slice fallback state is kept redundantly inside each slice so that a bad frame does not force a common single-point output register into the voting path.
+
+The final output vote is a pure bitwise 2-of-3 majority of the 3 slice-resolved bits.
+
+## Majority Feedback Byte
+
+The third byte sent by the master is a per-CPU `majority_byte`.
+
+For each CPU bit:
+- `1` means that CPU sent a valid bit and that bit matched the final voted output
+- `0` means that CPU bit was invalid or disagreed with the final voted output
+
+This byte is sent one frame later, because it is computed from the frame that just completed and transmitted on the next frame.
+
+If a CPU frame is rejected because of a bad echoed PRG byte, that CPU's next `majority_byte` is cleared.
+
+## Timing
+
+- project clock: `8.192 MHz`
+- SPI clock: about `1.024 MHz`
+- frame period: `1 ms`
+- first frame after reset: about `0.5 ms`
 
 ## How to test
 
-Connect the demo board:
-- Toggle switches (ui_in) to simulate inputs.
-- Use external MCUs/processors on SPI pins (uio) to simulate the 3 redundant CPUs.
-- Observe voted outputs on the 7-segment display.
-- For simulation: Use the testbench in `test/` to verify voting and SPI.
+Run the RTL cocotb tests from the project root:
+
+```sh
+./build -t
+```
+
+Print the latest utilization and cell counts without building:
+
+```sh
+./build -s
+```
+
+Run tests and then print the same summary:
+
+```sh
+./build -t -s
+```
+
+The current cocotb suite covers:
+- basic valid voting
+- per-bit validity masks
+- majority-byte timing and contents
+- rejected frames after bad echoed PRG bytes
+- fallback to the previously voted state
+- a 256-frame randomized no-reset stress test with one injected SPI bit fault per frame
+
+Waveforms are written to `test/tb.fst`.
 
 ## External hardware
 
-- 3x Ambiq Apollo MCUs (or similar) connected via SPI.
-- Demo board for testing (clock 8.192MHz, switches, display). On the
-demo board the RP2350 SPI1 in slave mode is connected to cs_n, sclk,
-miso0, mosi0. For basic majority simulation miso0 and miso2 receive
-the same signal from RP2350 SPI1.tx, simulating two agreeing processors.
+This design expects 3 external CPUs or equivalent SPI slaves. Each one needs only:
+- one MISO line to the chip
+- one MOSI line from the chip
+- the shared `cs_n`
+- the shared `sclk`
+
+Each CPU should:
+- stage the received `next_prn`
+- compute its `desired_out`
+- compute its `desired_valid`
+- return those 3 bytes on the next poll
