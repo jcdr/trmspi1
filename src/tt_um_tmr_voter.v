@@ -21,9 +21,9 @@
 // Master to Slave: next_prn[7:0], switches[7:0], majority_byte[7:0]
 // Slave to Master: echoed_prn[7:0], desired_out[7:0], desired_valid[7:0]
 // Majority bit: 1 if that CPU sent a valid bit matching the voted output, 0 otherwise
-// PRNG: 8-bit LFSR, polynomial x^8 + x^6 + x^5 + x^4 + 1, initial 8'h2A shared with CPUs
-// Validation: Compute next_prn from current_prn, send it, and compare the received echoed_prn
-// against the previous current_prn. Invalid frames don't update pX_out.
+// PRNG: 8-bit LFSR, polynomial x^8 + x^6 + x^5 + x^4 + 1, one instance per SPI slice
+// Validation: Each slice computes next_prn from its own current_prn, sends it, and compares the
+// received echoed_prn against its previous current_prn. Invalid frames don't update that slice.
 // Cycle: 1kHz voting (timer 13-bit, ~1ms at 8.192MHz clk)
 // SCLK: 1.024MHz (main clk / 8)
 
@@ -180,23 +180,25 @@ module tt_um_tmr_voter (
     reg [4:0] bit_cnt;
     reg state;  // 0=IDLE, 1=TX_RX
 
-    // MINIMAL FIX: removed unused phase/bit_pos (was causing off-by-one race)
-    // bit_cnt[4:3] = current byte (0=next_prn, 1=agreement, 2=switches)
-    // bit_cnt[2:0] = bit inside byte
+    wire start_frame = (timer == 0) && (state == 0);
+    wire sample_en = (state == 1) && (sclk_div == 3'b111) && (sclk_out == 0);
+    wire shift_en = (state == 1) && (sclk_div == 3'b111) && (sclk_out == 1);
 
-    reg [7:0] tx_shift0, tx_shift1, tx_shift2;
-    reg [7:0] rx_shift0, rx_shift1, rx_shift2;
-    wire mosi0 = tx_shift0[7];
-    wire mosi1 = tx_shift1[7];
-    wire mosi2 = tx_shift2[7];
-
-    reg [7:0] received_next0, received_next1, received_next2;
-    reg [7:0] desired0, desired1, desired2;
-    reg [7:0] desired_valid0, desired_valid1, desired_valid2;
-
-    wire frame_valid0 = (received_next0 == current_prn);
-    wire frame_valid1 = (received_next1 == current_prn);
-    wire frame_valid2 = (received_next2 == current_prn);
+    wire mosi0;
+    wire mosi1;
+    wire mosi2;
+    wire [7:0] desired0;
+    wire [7:0] desired1;
+    wire [7:0] desired2;
+    wire [7:0] desired_valid0;
+    wire [7:0] desired_valid1;
+    wire [7:0] desired_valid2;
+    wire [7:0] p0_out;
+    wire [7:0] p1_out;
+    wire [7:0] p2_out;
+    wire frame_valid0;
+    wire frame_valid1;
+    wire frame_valid2;
     wire [7:0] resolved0;
     wire [7:0] resolved1;
     wire [7:0] resolved2;
@@ -204,6 +206,60 @@ module tt_um_tmr_voter (
     wire [7:0] majority1;
     wire [7:0] majority2;
     wire [7:0] new_voted;
+
+    tt_um_tmr_spi_slice spi0 (
+        .clk(clk),
+        .rst_n(rst_n),
+        .start_frame(start_frame),
+        .sample_en(sample_en),
+        .shift_en(shift_en),
+        .bit_cnt(bit_cnt),
+        .miso(miso0),
+        .switches(switches),
+        .voted(new_voted),
+        .majority(majority0),
+        .mosi(mosi0),
+        .desired(desired0),
+        .desired_valid(desired_valid0),
+        .previous_voted(p0_out),
+        .frame_valid(frame_valid0)
+    );
+
+    tt_um_tmr_spi_slice spi1 (
+        .clk(clk),
+        .rst_n(rst_n),
+        .start_frame(start_frame),
+        .sample_en(sample_en),
+        .shift_en(shift_en),
+        .bit_cnt(bit_cnt),
+        .miso(miso1),
+        .switches(switches),
+        .voted(new_voted),
+        .majority(majority1),
+        .mosi(mosi1),
+        .desired(desired1),
+        .desired_valid(desired_valid1),
+        .previous_voted(p1_out),
+        .frame_valid(frame_valid1)
+    );
+
+    tt_um_tmr_spi_slice spi2 (
+        .clk(clk),
+        .rst_n(rst_n),
+        .start_frame(start_frame),
+        .sample_en(sample_en),
+        .shift_en(shift_en),
+        .bit_cnt(bit_cnt),
+        .miso(miso2),
+        .switches(switches),
+        .voted(new_voted),
+        .majority(majority2),
+        .mosi(mosi2),
+        .desired(desired2),
+        .desired_valid(desired_valid2),
+        .previous_voted(p2_out),
+        .frame_valid(frame_valid2)
+    );
 
     genvar i;
     generate
@@ -241,104 +297,33 @@ module tt_um_tmr_voter (
         end
     endgenerate
 
-    reg [7:0] p0_out, p1_out, p2_out;
     reg [7:0] voted;
-
-    reg [7:0] current_prn;  // Previous PRN expected back from CPUs this frame
-    wire [7:0] next_prn;    // Next PRN sent to CPUs this frame
-
-    // PRNG algorithm: 8-bit LFSR, polynomial x^8 + x^6 + x^5 + x^4 + 1 (taps at positions 8,6,5,4)
-    // This is a well-known maximal-length LFSR for 8 bits, period 255, simple bitwise XOR implementation.
-    // Parameters: Initial seed 8'h01 (shared with CPUs), feedback = bit7 ^ bit5 ^ bit4 ^ bit3
-    wire prng_fb = current_prn[7] ^ current_prn[5] ^ current_prn[4] ^ current_prn[3];
-    assign next_prn = {current_prn[6:0], prng_fb};
-
     reg [12:0] timer;     // For 1kHz voting (~8192 cycles at 8.192MHz)
 
     always @(posedge clk or negedge rst_n) begin
         if (!rst_n) begin
-            current_prn <= 8'h2A;  // Initial seed, shared with CPUs
             timer <= 13'd4096;  // start first transaction after ~0.5 ms (half of the 1 kHz cycle)
             voted <= 0;
-            p0_out <= 0; p1_out <= 0; p2_out <= 0;
             state <= 0;
             bit_cnt <= 0;
-            // MINIMAL FIX: removed phase/bit_pos init
-            tx_shift0 <= 0; tx_shift1 <= 0; tx_shift2 <= 0;
-            rx_shift0 <= 0; rx_shift1 <= 0; rx_shift2 <= 0;
-            received_next0 <= 0; received_next1 <= 0; received_next2 <= 0;
-            desired0 <= 0; desired1 <= 0; desired2 <= 0;
-            desired_valid0 <= 0; desired_valid1 <= 0; desired_valid2 <= 0;
             sclk_out <= 0;
             cs_n_out <= 1;
         end else begin
             timer <= timer + 1;
-            if (timer == 0) begin  // timer_done: Start new cycle
-                if (state == 0) begin  // IDLE
-                    tx_shift0 <= next_prn;
-                    tx_shift1 <= next_prn;
-                    tx_shift2 <= next_prn;
-                    rx_shift0 <= 0;
-                    rx_shift1 <= 0;
-                    rx_shift2 <= 0;
-                    cs_n_out <= 0;
-                    state <= 1;  // TX_RX
-                    bit_cnt <= 0;
-                    // MINIMAL FIX: removed phase/bit_pos reset
-                end
+            if (start_frame) begin
+                cs_n_out <= 0;
+                state <= 1;  // TX_RX
+                bit_cnt <= 0;
             end
             if (state == 1) begin  // TX_RX
                 if (sclk_div == 3'b111) begin
                     sclk_out <= ~sclk_out;
-                    if (sclk_out == 0) begin  // Rising edge: sample
-                        rx_shift0 <= (rx_shift0 << 1) | {7'b0, miso0};
-                        rx_shift1 <= (rx_shift1 << 1) | {7'b0, miso1};
-                        rx_shift2 <= (rx_shift2 << 1) | {7'b0, miso2};
-                        // MINIMAL FIX: use bit_cnt[2:0] for byte end + bit_cnt[4:3] for phase
-                        if (bit_cnt[2:0] == 3'b111) begin
-                            case (bit_cnt[4:3])
-                                0: begin
-                                    received_next0 <= (rx_shift0 << 1) | {7'b0, miso0};
-                                    received_next1 <= (rx_shift1 << 1) | {7'b0, miso1};
-                                    received_next2 <= (rx_shift2 << 1) | {7'b0, miso2};
-                                end
-                                1: begin
-                                    desired0 <= (rx_shift0 << 1) | {7'b0, miso0};
-                                    desired1 <= (rx_shift1 << 1) | {7'b0, miso1};
-                                    desired2 <= (rx_shift2 << 1) | {7'b0, miso2};
-                                end
-                                2: begin
-                                    desired_valid0 <= (rx_shift0 << 1) | {7'b0, miso0};
-                                    desired_valid1 <= (rx_shift1 << 1) | {7'b0, miso1};
-                                    desired_valid2 <= (rx_shift2 << 1) | {7'b0, miso2};
-                                end
-                            endcase
-                        end
-                    end else begin  // Falling edge: shift/load
-                        // Load the next TX byte after the previous 8 bits have completed
-                        if (bit_cnt == 5'd7) begin
-                            tx_shift0 <= switches;
-                            tx_shift1 <= switches;
-                            tx_shift2 <= switches;
-                        end else if (bit_cnt == 5'd15) begin
-                            tx_shift0 <= majority0;
-                            tx_shift1 <= majority1;
-                            tx_shift2 <= majority2;
-                        end else begin
-                            tx_shift0 <= {tx_shift0[6:0], 1'b0};
-                            tx_shift1 <= {tx_shift1[6:0], 1'b0};
-                            tx_shift2 <= {tx_shift2[6:0], 1'b0};
-                        end
+                    if (shift_en) begin
                         bit_cnt <= bit_cnt + 1;
-                        if (bit_cnt == 23) begin
+                        if (bit_cnt == 5'd23) begin
                             cs_n_out <= 1;
                             state <= 0;
-                            p0_out <= new_voted;
-                            p1_out <= new_voted;
-                            p2_out <= new_voted;
                             voted <= new_voted;
-                            // Advance PRNG for next cycle
-                            current_prn <= next_prn;
                         end
                     end
                 end
