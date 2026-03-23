@@ -27,6 +27,35 @@
 // Cycle: 1kHz voting (timer 13-bit, ~1ms at 8.192MHz clk)
 // SCLK: 1.024MHz (main clk / 8)
 
+module tt_um_tmr_voter_bit (
+    input  wire desired0,
+    input  wire valid0,
+    input  wire desired1,
+    input  wire valid1,
+    input  wire desired2,
+    input  wire valid2,
+    input  wire previous_voted,
+    output wire voted,
+    output wire majority0,
+    output wire majority1,
+    output wire majority2
+);
+
+    wire voted_one = (valid0 & valid1 & desired0 & desired1) |
+                     (valid0 & valid2 & desired0 & desired2) |
+                     (valid1 & valid2 & desired1 & desired2);
+    wire voted_zero = (valid0 & valid1 & ~desired0 & ~desired1) |
+                      (valid0 & valid2 & ~desired0 & ~desired2) |
+                      (valid1 & valid2 & ~desired1 & ~desired2);
+    wire voted_valid = voted_one | voted_zero;
+
+    assign voted = voted_one | (~voted_valid & previous_voted);
+    assign majority0 = valid0 & ((valid1 & (desired0 == desired1)) | (valid2 & (desired0 == desired2)));
+    assign majority1 = valid1 & ((valid0 & (desired1 == desired0)) | (valid2 & (desired1 == desired2)));
+    assign majority2 = valid2 & ((valid0 & (desired2 == desired0)) | (valid1 & (desired2 == desired1)));
+
+endmodule
+
 module tt_um_tmr_voter (
     input  wire [7:0] ui_in,    // Dedicated inputs (switches)
     output wire [7:0] uo_out,   // Dedicated outputs (to display)
