@@ -1,18 +1,22 @@
 #!/bin/bash
 
 test_only=0
+print_stats_only=0
 
-case "${1:-}" in
-    -t|--test)
-        test_only=1
-        ;;
-    "")
-        ;;
-    *)
-        echo "Usage: $0 [-t|--test]" >&2
+for arg in "$@"; do
+    case "$arg" in
+        -t|--test)
+            test_only=1
+            ;;
+        -s|--stat)
+            print_stats_only=1
+            ;;
+        *)
+        echo "Usage: $0 [-t|--test] [-s|--stat]" >&2
         exit 1
-        ;;
-esac
+            ;;
+    esac
+done
 
 source ~/ttsetup/venv/bin/activate
 
@@ -60,6 +64,14 @@ PY
 
 if [ "$test_only" -eq 1 ]; then
     time (cd test/ && make -B)
+    if [ "$print_stats_only" -eq 1 ]; then
+        print_summary
+    fi
+    exit $?
+fi
+
+if [ "$print_stats_only" -eq 1 ]; then
+    print_summary
     exit $?
 fi
 
